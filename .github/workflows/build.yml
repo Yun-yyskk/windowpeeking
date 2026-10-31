@@ -10,7 +10,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build (release, static CRT)
         shell: cmd
@@ -24,9 +24,10 @@ jobs:
           build\windowpeeking.exe --selftest-picker
           if errorlevel 1 exit /b 1
 
-      - name: Self-test that needs a live desktop (not a gate)
+      # The pixel test needs a real desktop, and the runner has one: DWM composes
+      # normally there, so this is a gate, not an optional extra.
+      - name: Self-test against a live desktop (DWM pixels)
         shell: cmd
-        continue-on-error: true
         run: build\windowpeeking.exe --selftest-e2e
 
       - name: Reports
@@ -37,7 +38,7 @@ jobs:
           type build\picker.txt
           if exist build\e2e.txt type build\e2e.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windowpeeking-exe
           path: build/windowpeeking.exe

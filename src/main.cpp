@@ -344,9 +344,20 @@ int RunE2ETest(HINSTANCE instance) {
     wc.lpszClassName = L"WindowPeeking.TestSource";
     RegisterClassExW(&wc);
 
+    // Everything is placed relative to the real screen: a CI runner is 1024x768,
+    // a laptop here is 2560x1600, and hard-coded pixels fall off the CI screen.
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    char screenInfo[96];
+    wsprintfA(screenInfo, "virtual screen %d,%d %dx%d (all probes below are placed inside it)\r\n", vx, vy, vw, vh);
+    report += screenInfo;
+
     // Source window: visible, 400x300, blue on the left and green on the right.
+    const RECT sourceRect{ vx + 20, vy + 20, vx + 420, vy + 320 };
     HWND source = CreateWindowExW(0, L"WindowPeeking.TestSource", L"WindowPeeking source", WS_OVERLAPPEDWINDOW,
-                                  40, 40, 400, 300, nullptr, nullptr, instance, nullptr);
+                                  sourceRect.left, sourceRect.top, 400, 300, nullptr, nullptr, instance, nullptr);
     if (source == nullptr) {
         check(false, "create test source window", "CreateWindowExW failed");
         return 1;
@@ -356,8 +367,21 @@ int RunE2ETest(HINSTANCE instance) {
     Pump(300);
 
     // Crop the right half only: everything in the windowpeeking must be green.
+    // Keep the preview fully on screen, whatever the display size is.
+    const int mirrorW = 200;
+    const int mirrorH = 300;
+    int mirrorX = sourceRect.right + 60;
+    if (mirrorX + mirrorW + 20 > vx + vw) {
+        mirrorX = vx + vw - mirrorW - 20;
+    }
+    int mirrorY = sourceRect.top + 40;
+    if (mirrorY + mirrorH + 20 > vy + vh) {
+        mirrorY = vy + vh - mirrorH - 20;
+    }
+    const RECT mirrorRect{ mirrorX, mirrorY, mirrorX + mirrorW, mirrorY + mirrorH };
+
     wp::Mirror mirror;
-    const bool created = mirror.Create(instance, RECT{ 900, 80, 1100, 380 }, 200, 300);
+    const bool created = mirror.Create(instance, mirrorRect, mirrorW, mirrorH);
     check(created, "create windowpeeking window", created ? "ok" : "CreateWindowExW failed");
 
     const bool attached = created && mirror.Attach(source, RECT{ 200, 0, 400, 300 });
@@ -387,11 +411,22 @@ int RunE2ETest(HINSTANCE instance) {
     check(Near(afterRed, 255, 0, 0, 40), "live update: windowpeeking follows the source repaint", Describe(afterRed));
 
     // Resize the windowpeeking: the picture must survive the resize (letterboxed).
-    SetWindowPos(mirror.Hwnd(), HWND_TOPMOST, 0, 0, 300, 300, SWP_NOMOVE | SWP_NOACTIVATE);
+    const int rw = 300;
+    const int rh = 300;
+    int rx = static_cast<int>(mr.left);
+    if (rx + rw + 20 > vx + vw) {
+        rx = vx + vw - rw - 20;
+    }
+    int ry = static_cast<int>(mr.top);
+    if (ry + rh + 20 > vy + vh) {
+        ry = vy + vh - rh - 20;
+    }
+    SetWindowPos(mirror.Hwnd(), HWND_TOPMOST, rx, ry, rw, rh, SWP_NOACTIVATE);
     Pump(500);
     GetWindowRect(mirror.Hwnd(), &mr);
-    const COLORREF afterResize = SampleScreen(mr.left + (mr.right - mr.left) / 2,
-                                             mr.top + (mr.bottom - mr.top) / 2);
+    const int rcxp = mr.left + (mr.right - mr.left) / 2;
+    const int rcyp = mr.top + (mr.bottom - mr.top) / 2;
+    const COLORREF afterResize = SampleScreen(rcxp, rcyp);
     check(Near(afterResize, 255, 0, 0, 40), "still live after resizing the windowpeeking", Describe(afterResize));
 
     mirror.Destroy();
