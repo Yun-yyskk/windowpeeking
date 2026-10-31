@@ -10,7 +10,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Build (release, static CRT)
         shell: cmd
@@ -38,7 +38,7 @@ jobs:
           type build\picker.txt
           if exist build\e2e.txt type build\e2e.txt
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: windowpeeking-exe
           path: build/windowpeeking.exe
