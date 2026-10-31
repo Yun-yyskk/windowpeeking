@@ -1,9 +1,11 @@
 # WindowPeeking
 
-**English** | [中文](README_zh.md)
+**English** | [中文](README_zh.md) | ![build](https://github.com/Yun-yyskk/windowpeeking/actions/workflows/build.yml/badge.svg)
 
 A borderless, always-on-top live view of any window region on Windows.
 Peek at one part of another window while that window stays in the background.
+
+![The window on the left stays in the background; only the region on the right is mirrored, live, with no title bar](docs/screenshot.png)
 
 Built on the DWM thumbnail API, the same mechanism as PowerToys *Crop And Lock*
 (Thumbnail mode), but with **no title bar and no frame** — just the pixels.
@@ -49,6 +51,7 @@ both build variants:
 build\windowpeeking.exe --selftest         :: borderless geometry, drag, resize, topmost
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels
+build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing
 ```
 
 ## Known limits

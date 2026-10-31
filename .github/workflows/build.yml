@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (release, static CRT)
+        shell: cmd
+        run: build.cmd release
+
+      - name: Self-tests that must pass
+        shell: cmd
+        run: |
+          build\windowpeeking.exe --selftest
+          if errorlevel 1 exit /b 1
+          build\windowpeeking.exe --selftest-picker
+          if errorlevel 1 exit /b 1
+
+      - name: Self-test that needs a live desktop (not a gate)
+        shell: cmd
+        continue-on-error: true
+        run: build\windowpeeking.exe --selftest-e2e
+
+      - name: Reports
+        if: always()
+        shell: cmd
+        run: |
+          type build\selftest.txt
+          type build\picker.txt
+          if exist build\e2e.txt type build\e2e.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windowpeeking-exe
+          path: build/windowpeeking.exe

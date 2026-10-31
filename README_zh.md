@@ -1,9 +1,11 @@
 # WindowPeeking
 
-[English](README.md) | **中文**
+[English](README.md) | **中文** | ![build](https://github.com/Yun-yyskk/windowpeeking/actions/workflows/build.yml/badge.svg)
 
 Windows 上任何窗口的**无边框、置顶、实时局部预览**：实时看一眼另一个窗口的某一小块，
 而那个窗口继续留在后台干活。
+
+![左边那个窗口留在后台，右边只镜像它的一小块，实时、无标题栏](docs/screenshot.png)
 
 底层用 DWM 缩略图，和 PowerToys 的「裁剪与锁定」（Thumbnail 模式）同一机制，
 但**没有标题栏、没有边框**，只有画面。
@@ -44,6 +46,7 @@ Windows 上直接能跑；普通版体积只有三分之一，但需要 Microsof
 build\windowpeeking.exe --selftest         :: 无边框几何、拖动、缩放、置顶
 build\windowpeeking.exe --selftest-picker  :: 选区换算与命中测试
 build\windowpeeking.exe --selftest-e2e     :: 真 DWM 缩略图 + 采样像素验证
+build\windowpeeking.exe --demo             :: 上面截图里的那个演示场景
 ```
 
 ## 已知限制

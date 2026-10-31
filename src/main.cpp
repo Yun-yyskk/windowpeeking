@@ -528,7 +528,148 @@ int RunSelfTest(HINSTANCE instance) {
     return allOk ? 0 : 1;
 }
 
+// ---- demo mode -----------------------------------------------------------
+// A self-contained scene used for the README screenshot and for eyeballing the
+// tool without touching real windows: a fake "team-chat" window plus one
+// windowpeeking attached to a region of it.
+LRESULT CALLBACK DemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH bg = CreateSolidBrush(RGB(28, 28, 32));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+
+        RECT strip{ 0, 0, rc.right, 32 };
+        HBRUSH bar = CreateSolidBrush(RGB(45, 45, 54));
+        FillRect(dc, &strip, bar);
+        DeleteObject(bar);
+
+        SetBkMode(dc, TRANSPARENT);
+        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        HGDIOBJ oldFont = SelectObject(dc, font);
+
+        SetTextColor(dc, RGB(205, 205, 215));
+        RECT title{ 12, 7, rc.right - 12, 28 };
+        DrawTextW(dc, L"# team-chat   -   nightly log", -1, &title, DT_LEFT | DT_SINGLELINE);
+
+        struct Row { COLORREF colour; const wchar_t* text; };
+        const Row rows[] = {
+            { RGB(110, 190, 255), L"09:12  ana     pushed the fix for the picker" },
+            { RGB(150, 150, 160), L"09:13  ci      build #482 started" },
+            { RGB(120, 220, 150), L"09:14  ci      build #482 green in 2m41s" },
+            { RGB(150, 150, 160), L"09:15  ken     anyone see the release notes?" },
+            { RGB(255, 200, 110), L"09:16  you     ready to tag 0.1.0" },
+            { RGB(110, 190, 255), L"09:16  ana     ship it" },
+        };
+        const int count = static_cast<int>(sizeof(rows) / sizeof(rows[0]));
+        int y = 46;
+        for (int i = 0; i < count; ++i) {
+            SetTextColor(dc, rows[i].colour);
+            RECT line{ 16, y, rc.right - 16, y + 22 };
+            DrawTextW(dc, rows[i].text, -1, &line, DT_LEFT | DT_SINGLELINE);
+            y += 30;
+        }
+
+        // A block that the windowpeeking crops, so the crop is obvious.
+        RECT note{ 16, y + 10, rc.right - 16, rc.bottom - 16 };
+        HBRUSH noteBg = CreateSolidBrush(RGB(38, 40, 48));
+        FillRect(dc, &note, noteBg);
+        DeleteObject(noteBg);
+        SetTextColor(dc, RGB(230, 190, 120));
+        RECT noteText{ note.left + 12, note.top + 10, note.right - 12, note.bottom - 10 };
+        DrawTextW(dc, L"TODO  windowpeeking still freezes when the source is minimized\n"
+                      L"      (that is a Windows limit, not a bug here)",
+                  -1, &noteText, DT_LEFT | DT_WORDBREAK);
+
+        SelectObject(dc, oldFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int RunDemo(HINSTANCE instance) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DemoWndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = L"WindowPeeking.DemoSource";
+    RegisterClassExW(&wc);
+
+    if (!wp::Mirror::RegisterClassOnce(instance)) {
+        return 1;
+    }
+
+    const RECT sourceRect{ 160, 160, 920, 660 };
+    HWND source = CreateWindowExW(0, L"WindowPeeking.DemoSource", L"team-chat",
+                                  WS_OVERLAPPEDWINDOW, sourceRect.left, sourceRect.top,
+                                  sourceRect.right - sourceRect.left,
+                                  sourceRect.bottom - sourceRect.top, nullptr, nullptr, instance,
+                                  nullptr);
+    if (source == nullptr) {
+        return 1;
+    }
+    ShowWindow(source, SW_SHOWNOACTIVATE);
+    SetWindowPos(source, HWND_TOPMOST, sourceRect.left, sourceRect.top,
+                 sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top,
+                 SWP_SHOWWINDOW);
+    UpdateWindow(source);
+
+    // The crop keeps the aspect ratio of its own region, so there is no letterbox.
+    const RECT crop{ 300, 210, 700, 460 };
+    const RECT previewRect{ 980, 200, 1380, 450 };
+    wp::Mirror mirror;
+    if (!mirror.Create(instance, previewRect, previewRect.right - previewRect.left,
+                       previewRect.bottom - previewRect.top)) {
+        return 1;
+    }
+    mirror.MoveTo(previewRect);
+    if (!mirror.Attach(source, crop)) {
+        return 1;
+    }
+    SetWindowTextW(mirror.Hwnd(), L"WindowPeeking demo");
+
+    char line[256]{};
+    std::snprintf(line, sizeof(line), "source=%ld,%ld,%ld,%ld preview=%ld,%ld,%ld,%ld\r\n",
+                  sourceRect.left, sourceRect.top, sourceRect.right, sourceRect.bottom,
+                  previewRect.left, previewRect.top, previewRect.right, previewRect.bottom);
+    const std::wstring path = wp::ExeDir() + L"\\demo.txt";
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+        CloseHandle(file);
+    }
+
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    mirror.Destroy();
+    if (IsWindow(source)) {
+        DestroyWindow(source);
+    }
+    return 0;
+}
+
 } // namespace
+
 
 HWND wp::AppWindow() {
     return g_app;
@@ -551,6 +692,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     }
     if (args.find(L"--selftest") != std::wstring::npos) {
         return RunSelfTest(instance);
+    }
+    if (args.find(L"--demo") != std::wstring::npos) {
+        return RunDemo(instance);
     }
 
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\WindowPeeking.SingleInstance");
