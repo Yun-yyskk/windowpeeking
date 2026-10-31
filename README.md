@@ -3,9 +3,10 @@
 **English** | [中文](README_zh.md) | ![build](https://github.com/Yun-yyskk/windowpeeking/actions/workflows/build.yml/badge.svg)
 
 A borderless, always-on-top live view of any window region on Windows.
-Peek at one part of another window while that window stays in the background.
+Peek at one part of another window while that window stays in the background —
+as many parts, of as many windows, as you like.
 
-![The window on the left stays in the background; only the region on the right is mirrored, live, with no title bar](docs/screenshot.png)
+![The window on the left stays in the background; two regions of it are mirrored live on the right, with no title bars](docs/screenshot.png)
 
 Built on the DWM thumbnail API, the same mechanism as PowerToys *Crop And Lock*
 (Thumbnail mode), but with **no title bar and no frame** — just the pixels.
@@ -25,9 +26,10 @@ itself and with the tray icon:
 | Resize | Drag any edge or corner (eight directions, hand-rolled hit testing) |
 | Move | Hold **Shift** and drag anywhere in the preview |
 | Opacity | Hold **Shift** and turn the mouse wheel (10%–100%) |
-| Menu | Right-click: new preview, opacity presets, click-through, close, quit |
+| Menu | Right-click: new preview, opacity presets, click-through, close this preview, close all, quit |
 | Click-through | The menu item, or the tray icon — the mouse **and** the keyboard then go to the window underneath |
-| New preview / quit | Double-click or right-click the tray icon |
+| Another preview | Press Ctrl+Alt+P again, right-click a preview, or double-click the tray icon — previews are independent (own window, own region, own position, opacity and click-through state) |
+| Close all / quit | Tray icon; the tooltip shows how many previews are open |
 
 A plain drag on the body deliberately does **nothing**, so the preview cannot be
 nudged by accident while you are working underneath it; moving always takes
@@ -71,7 +73,7 @@ carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
 Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 29 checks: borderless geometry, eight-way resize, Shift-move, wheel opacity, click-through, icon
+build\windowpeeking.exe --selftest         :: 34 checks: borderless geometry, eight-way resize, Shift-move, wheel opacity, click-through, icon, several previews at once
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing

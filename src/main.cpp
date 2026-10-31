@@ -1,8 +1,10 @@
 #include "windowpeeking.h"
 #include <shellapi.h>   // NOTIFYICONDATAW, Shell_NotifyIconW
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -25,7 +27,9 @@ enum TrayMenuId : UINT {
 
 HWND g_app = nullptr;
 HINSTANCE g_instance = nullptr;
-wp::Mirror* g_mirror = nullptr;
+// Every live preview. Each one owns its source window, crop, position, opacity
+// and click-through state; this list is the only owner of their lifetime.
+std::vector<wp::Mirror*> g_previews;
 bool g_pickRequested = false;
 
 HICON LoadAppIcon() {
@@ -60,9 +64,79 @@ void RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
+void UpdateTrayTip() {
+    if (g_app == nullptr) {
+        return;
+    }
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_app;
+    nid.uID = kTrayId;
+    nid.uFlags = NIF_TIP;
+    if (g_previews.empty()) {
+        lstrcpynW(nid.szTip, L"WindowPeeking 窗窥 —— Ctrl+Alt+P 选一块区域", ARRAYSIZE(nid.szTip));
+    } else {
+        wchar_t tip[128]{};
+        wsprintfW(tip, L"WindowPeeking 窗窥 —— %d 个预览", static_cast<int>(g_previews.size()));
+        lstrcpynW(nid.szTip, tip, ARRAYSIZE(nid.szTip));
+    }
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+wp::Mirror* FindPreview(HWND hwnd) {
+    for (wp::Mirror* preview : g_previews) {
+        if (preview != nullptr && preview->Hwnd() == hwnd) {
+            return preview;
+        }
+    }
+    return nullptr;
+}
+
+// One preview goes away: unlink it from the list first so a re-entrant close
+// (menu -> PostMessage -> here) can never walk a dangling pointer.
+void DestroyPreview(wp::Mirror* preview) {
+    if (preview == nullptr) {
+        return;
+    }
+    const auto it = std::find(g_previews.begin(), g_previews.end(), preview);
+    if (it != g_previews.end()) {
+        g_previews.erase(it);
+    }
+    preview->Destroy();
+    delete preview;
+    UpdateTrayTip();
+}
+
+void DestroyAllPreviews() {
+    const std::vector<wp::Mirror*> all = g_previews;
+    for (wp::Mirror* preview : all) {
+        DestroyPreview(preview);
+    }
+}
+
+bool AllClickThrough() {
+    if (g_previews.empty()) {
+        return false;
+    }
+    for (wp::Mirror* preview : g_previews) {
+        if (preview == nullptr || !preview->ClickThrough()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void SetClickThroughAll(bool on) {
+    for (wp::Mirror* preview : g_previews) {
+        if (preview != nullptr) {
+            preview->SetClickThrough(on);
+        }
+    }
+}
+
 void ShowTrayMenu() {
-    const bool hasPreview = (g_mirror != nullptr) && (g_mirror->Hwnd() != nullptr);
-    const bool through = hasPreview && g_mirror->ClickThrough();
+    const bool hasPreview = !g_previews.empty();
+    const bool through = AllClickThrough();
 
     HMENU menu = CreatePopupMenu();
     if (menu == nullptr) {
@@ -70,8 +144,8 @@ void ShowTrayMenu() {
     }
     AppendMenuW(menu, MF_STRING, IDM_TRAY_PICK, L"新建预览...	Ctrl+Alt+P");
     AppendMenuW(menu, MF_STRING | (through ? MF_CHECKED : 0) | (hasPreview ? 0 : MF_GRAYED),
-                IDM_TRAY_THROUGH, L"点击穿透（鼠标 + 键盘）");
-    AppendMenuW(menu, MF_STRING | (hasPreview ? 0 : MF_GRAYED), IDM_TRAY_CLOSE, L"关闭预览");
+                IDM_TRAY_THROUGH, L"点击穿透所有预览（鼠标 + 键盘）");
+    AppendMenuW(menu, MF_STRING | (hasPreview ? 0 : MF_GRAYED), IDM_TRAY_CLOSE, L"关闭所有预览");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_TRAY_QUIT, L"退出	Ctrl+Alt+Q");
 
@@ -90,12 +164,12 @@ void ShowTrayMenu() {
         break;
     case IDM_TRAY_THROUGH:
         if (hasPreview) {
-            g_mirror->SetClickThrough(!g_mirror->ClickThrough());
+            SetClickThroughAll(!through);
         }
         break;
     case IDM_TRAY_CLOSE:
         if (hasPreview) {
-            g_mirror->Destroy();
+            DestroyAllPreviews();
         }
         break;
     case IDM_TRAY_QUIT:
@@ -150,6 +224,13 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_WINDOWPEEKING_PICK:
         g_pickRequested = true;
         return 0;
+    // A preview asked to be closed (its own right-click menu).
+    case WM_WINDOWPEEKING_CLOSE_PREVIEW:
+        DestroyPreview(FindPreview(reinterpret_cast<HWND>(lParam)));
+        return 0;
+    case WM_WINDOWPEEKING_CLOSE_ALL:
+        DestroyAllPreviews();
+        return 0;
     case WM_HOTKEY:
         switch (static_cast<int>(wParam)) {
         case kHotkeyPick: g_pickRequested = true; break;
@@ -189,7 +270,9 @@ bool CreateAppWindow(HINSTANCE instance) {
     return g_app != nullptr;
 }
 
-void DoPick(HINSTANCE instance, wp::Mirror& mirror) {
+// Every pick makes a new preview window. Existing previews keep their own
+// source, crop, position, opacity and click-through state untouched.
+void DoPick(HINSTANCE instance) {
     HWND source = nullptr;
     RECT crop{};
     RECT screenRect{};
@@ -200,22 +283,26 @@ void DoPick(HINSTANCE instance, wp::Mirror& mirror) {
     const int width = crop.right - crop.left;
     const int height = crop.bottom - crop.top;
 
-    if (mirror.Hwnd() == nullptr) {
-        if (!mirror.Create(instance, screenRect, width, height)) {
-            MessageBoxW(nullptr, L"无法创建预览窗口。", L"WindowPeeking", MB_ICONERROR | MB_OK);
-            return;
-        }
-    } else {
-        mirror.MoveTo(screenRect);
+    auto* preview = new wp::Mirror();
+    if (!preview->Create(instance, screenRect, width, height)) {
+        delete preview;
+        MessageBoxW(nullptr, L"无法创建预览窗口。", L"WindowPeeking", MB_ICONERROR | MB_OK);
+        return;
     }
 
-    if (!mirror.Attach(source, crop)) {
+    if (!preview->Attach(source, crop)) {
+        preview->Destroy();
+        delete preview;
         MessageBoxW(nullptr,
                     L"无法接管这个窗口的画面。\n"
                     L"以管理员权限运行的窗口、受保护的窗口会拒绝 DWM 缩略图。\n"
                     L"试试用同样的权限运行本程序。",
                     L"WindowPeeking", MB_ICONWARNING | MB_OK);
+        return;
     }
+
+    g_previews.push_back(preview);
+    UpdateTrayTip();
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +804,64 @@ int RunSelfTest(HINSTANCE instance) {
         check(mirror.Hwnd() == nullptr, "destroy cleans up", "hwnd released");
     }
 
+    // ---- several previews at once ----
+    {
+        const bool appOk = CreateAppWindow(instance);
+        check(appOk, "hub window that owns the preview list",
+              appOk ? "app window created" : "CreateWindowExW failed");
+
+        auto openPreview = [&](int x) -> wp::Mirror* {
+            auto* preview = new wp::Mirror();
+            if (!preview->Create(instance, RECT{ x, 100, x + 200, 250 }, 200, 150)) {
+                delete preview;
+                return nullptr;
+            }
+            g_previews.push_back(preview);
+            return preview;
+        };
+
+        wp::Mirror* first = openPreview(100);
+        wp::Mirror* second = openPreview(400);
+        check(first != nullptr && second != nullptr && g_previews.size() == 2,
+              "two previews can be open at the same time",
+              "previews=" + std::to_string(g_previews.size()));
+
+        if (first != nullptr && second != nullptr) {
+            // State must be per preview: fading or un-clicking one leaves the rest.
+            first->SetOpacity(128);
+            first->SetClickThrough(true);
+            BYTE firstAlpha = 0;
+            BYTE secondAlpha = 0;
+            GetLayeredWindowAttributes(first->Hwnd(), nullptr, &firstAlpha, nullptr);
+            GetLayeredWindowAttributes(second->Hwnd(), nullptr, &secondAlpha, nullptr);
+            const LONG_PTR secondEx = GetWindowLongPtrW(second->Hwnd(), GWL_EXSTYLE);
+            char stateDetail[192]{};
+            std::snprintf(stateDetail, sizeof(stateDetail), "alpha %u/%u  through=%d/%d",
+                          static_cast<unsigned>(firstAlpha), static_cast<unsigned>(secondAlpha),
+                          first->ClickThrough() ? 1 : 0, second->ClickThrough() ? 1 : 0);
+            check(firstAlpha == 128 && secondAlpha == 255 && first->ClickThrough() &&
+                      !second->ClickThrough() && (secondEx & WS_EX_TRANSPARENT) == 0,
+                  "opacity and click-through stay per preview", stateDetail);
+
+            // Closing one (exactly what its own menu asks the hub to do) leaves
+            // the other one running.
+            PostMessageW(g_app, WM_WINDOWPEEKING_CLOSE_PREVIEW, 0,
+                         reinterpret_cast<LPARAM>(first->Hwnd()));
+            Pump(150);
+            check(g_previews.size() == 1 && g_previews[0] == second,
+                  "closing one preview leaves the others alone",
+                  "previews=" + std::to_string(g_previews.size()));
+        }
+
+        DestroyAllPreviews();
+        check(g_previews.empty(), "closing all previews empties the list", "previews=0");
+
+        if (g_app != nullptr) {
+            DestroyWindow(g_app);
+            g_app = nullptr;
+        }
+    }
+
     report += allOk ? "\r\nALL PASS\r\n" : "\r\nSOME CHECKS FAILED\r\n";
 
     const std::wstring path = wp::ExeDir() + L"\\selftest.txt";
@@ -772,10 +917,10 @@ LRESULT CALLBACK DemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         struct Row { COLORREF colour; const wchar_t* text; };
         const Row rows[] = {
-            { RGB(110, 190, 255), L"09:12  ana     pushed the fix for the picker" },
+            { RGB(110, 190, 255), L"09:12  ana     pushed the picker fix" },
             { RGB(150, 150, 160), L"09:13  ci      build #482 started" },
-            { RGB(120, 220, 150), L"09:14  ci      build #482 green in 2m41s" },
-            { RGB(150, 150, 160), L"09:15  ken     anyone see the release notes?" },
+            { RGB(120, 220, 150), L"09:14  ci      build #482 green" },
+            { RGB(150, 150, 160), L"09:15  ken     anyone seen the notes?" },
             { RGB(255, 200, 110), L"09:16  you     ready to tag 0.1.0" },
             { RGB(110, 190, 255), L"09:16  ana     ship it" },
         };
@@ -817,7 +962,12 @@ LRESULT CALLBACK DemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 // The stage is only there so the README screenshot has a clean backdrop instead
 // of whatever desktop happened to be behind it. It also draws the two captions.
 const RECT kStageRect{ 132, 132, 1408, 688 };
-const RECT kPreviewRect{ 980, 200, 1380, 450 };
+// Two previews on purpose: the demo shows that several crops can be open at
+// once, each with its own source region.
+// Both previews are created at exactly the size of their crop, so the picture
+// is 1:1 and the demo shows what a real crop looks like.
+const RECT kPreviewRect{ 960, 190, 1400, 425 };
+const RECT kPreviewRect2{ 960, 470, 1360, 590 };
 
 LRESULT CALLBACK StageWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -839,12 +989,15 @@ LRESULT CALLBACK StageWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             DeleteObject(b);
         }
 
-        // Elevation hint around the preview: the preview paints its own rect
-        // exactly, so a 2px ring outside it is all that shows.
-        RECT ring{ kPreviewRect.left - kStageRect.left - 2, kPreviewRect.top - kStageRect.top - 2,
-                   kPreviewRect.right - kStageRect.left + 2, kPreviewRect.bottom - kStageRect.top + 2 };
+        // Elevation hint around each preview: the previews paint their own rects
+        // exactly, so a 2px ring outside them is all that shows.
         HBRUSH ringBrush = CreateSolidBrush(RGB(58, 64, 78));
-        FrameRect(dc, &ring, ringBrush);
+        const RECT previews[2] = { kPreviewRect, kPreviewRect2 };
+        for (const RECT& pv : previews) {
+            RECT ring{ pv.left - kStageRect.left - 2, pv.top - kStageRect.top - 2,
+                       pv.right - kStageRect.left + 2, pv.bottom - kStageRect.top + 2 };
+            FrameRect(dc, &ring, ringBrush);
+        }
         DeleteObject(ringBrush);
 
         SetBkMode(dc, TRANSPARENT);
@@ -854,9 +1007,9 @@ LRESULT CALLBACK StageWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HGDIOBJ oldFont = SelectObject(dc, font);
         SetTextColor(dc, RGB(130, 138, 152));
 
-        RECT rightLabel{ kPreviewRect.left - kStageRect.left, 462 - kStageRect.top,
-                         kPreviewRect.right - kStageRect.left, 480 - kStageRect.top };
-        DrawTextW(dc, L"WindowPeeking  -  that region, live, no frame", -1, &rightLabel,
+        RECT rightLabel{ kPreviewRect2.left - kStageRect.left, 606 - kStageRect.top,
+                         kPreviewRect2.right - kStageRect.left, 626 - kStageRect.top };
+        DrawTextW(dc, L"WindowPeeking  -  two live crops, no frames", -1, &rightLabel,
                   DT_LEFT | DT_SINGLELINE);
 
         SelectObject(dc, oldFont);
@@ -919,24 +1072,38 @@ int RunDemo(HINSTANCE instance) {
                  SWP_SHOWWINDOW);
     UpdateWindow(source);
 
-    // The crop keeps the aspect ratio of its own region, so there is no letterbox.
-    const RECT crop{ 16, 40, 416, 290 };
-    const RECT previewRect{ 980, 200, 1380, 450 };
+    // Each crop keeps the aspect ratio of its own region, so there is no letterbox.
     wp::Mirror mirror;
-    if (!mirror.Create(instance, previewRect, previewRect.right - previewRect.left,
-                       previewRect.bottom - previewRect.top)) {
+    // Both crops are wider than their previews, so whole lines fit (the picture
+    // is scaled down slightly, which is also what a user would do by hand).
+    const RECT crop{ 12, 36, 452, 271 };
+    if (!mirror.Create(instance, kPreviewRect, kPreviewRect.right - kPreviewRect.left,
+                       kPreviewRect.bottom - kPreviewRect.top)) {
         return 1;
     }
-    mirror.MoveTo(previewRect);
+    mirror.MoveTo(kPreviewRect);
     if (!mirror.Attach(source, crop)) {
         return 1;
     }
     SetWindowTextW(mirror.Hwnd(), L"WindowPeeking demo");
 
+    // Second preview, cropped from the bottom of the same window.
+    wp::Mirror mirror2;
+    const RECT crop2{ 12, 108, 412, 228 };
+    if (!mirror2.Create(instance, kPreviewRect2, kPreviewRect2.right - kPreviewRect2.left,
+                        kPreviewRect2.bottom - kPreviewRect2.top)) {
+        return 1;
+    }
+    mirror2.MoveTo(kPreviewRect2);
+    if (!mirror2.Attach(source, crop2)) {
+        return 1;
+    }
+    SetWindowTextW(mirror2.Hwnd(), L"WindowPeeking demo 2");
+
+    // The screenshot is exactly the stage: it already contains both previews.
     char line[256]{};
-    std::snprintf(line, sizeof(line), "source=%ld,%ld,%ld,%ld preview=%ld,%ld,%ld,%ld\r\n",
-                  sourceRect.left, sourceRect.top, sourceRect.right, sourceRect.bottom,
-                  previewRect.left, previewRect.top, previewRect.right, previewRect.bottom);
+    std::snprintf(line, sizeof(line), "stage=%ld,%ld,%ld,%ld\r\n", kStageRect.left,
+                  kStageRect.top, kStageRect.right, kStageRect.bottom);
     const std::wstring path = wp::ExeDir() + L"\\demo.txt";
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -952,6 +1119,7 @@ int RunDemo(HINSTANCE instance) {
         DispatchMessageW(&msg);
     }
     mirror.Destroy();
+    mirror2.Destroy();
     if (IsWindow(source)) {
         DestroyWindow(source);
     }
@@ -1007,23 +1175,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     RegisterHotKey(g_app, kHotkeyPick, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
     RegisterHotKey(g_app, kHotkeyQuit, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');
 
-    wp::Mirror mirror;
-    g_mirror = &mirror;
+    g_previews.clear();
+
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
         if (g_pickRequested) {
             g_pickRequested = false;
-            DoPick(instance, mirror);
+            DoPick(instance);
         }
     }
 
     UnregisterHotKey(g_app, kHotkeyPick);
     UnregisterHotKey(g_app, kHotkeyQuit);
     RemoveTrayIcon();
-    g_mirror = nullptr;
-    mirror.Destroy();
+    DestroyAllPreviews();
     if (g_app != nullptr) {
         DestroyWindow(g_app);
         g_app = nullptr;

@@ -16,6 +16,7 @@ enum MenuId : UINT {
     IDM_OPACITY_FIRST,          // IDM_OPACITY_FIRST + i, i indexes kOpacitySteps
     IDM_CLICKTHROUGH = 100,
     IDM_CLOSE,
+    IDM_CLOSEALL,
     IDM_QUIT,
 };
 
@@ -281,6 +282,7 @@ void Mirror::ShowMenu(POINT screenPt) {
                 L"点击穿透（鼠标 + 键盘）");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_CLOSE, L"关闭这个预览");
+    AppendMenuW(menu, MF_STRING, IDM_CLOSEALL, L"关闭所有预览");
     AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 WindowPeeking\tCtrl+Alt+Q");
 
     // The window is normally WS_EX_NOACTIVATE so it never steals the keyboard.
@@ -311,7 +313,22 @@ void Mirror::ShowMenu(POINT screenPt) {
         }
         break;
     case IDM_CLICKTHROUGH: SetClickThrough(!m_clickThrough); break;
-    case IDM_CLOSE: Destroy(); break;
+    // The hub window owns every preview, so closing one is a request, not a
+    // self-destruct: it removes us from its list and deletes us.
+    case IDM_CLOSE:
+        if (HWND app = AppWindow()) {
+            PostMessageW(app, WM_WINDOWPEEKING_CLOSE_PREVIEW, 0, reinterpret_cast<LPARAM>(m_hwnd));
+        } else {
+            Destroy();
+        }
+        break;
+    case IDM_CLOSEALL:
+        if (HWND app = AppWindow()) {
+            PostMessageW(app, WM_WINDOWPEEKING_CLOSE_ALL, 0, 0);
+        } else {
+            Destroy();
+        }
+        break;
     case IDM_QUIT: PostQuitMessage(0); break;
     default: break;
     }

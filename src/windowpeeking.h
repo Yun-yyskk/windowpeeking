@@ -17,10 +17,15 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.2.0"
+#define WINDOWPEEKING_VERSION L"0.3.0"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)
+// Posted by a preview window when the user closes it from its own menu.
+// lParam is the preview HWND; the hub window owns the lifetime of every preview.
+#define WM_WINDOWPEEKING_CLOSE_PREVIEW (WM_APP + 3)
+// Close every preview, keep the tray icon.
+#define WM_WINDOWPEEKING_CLOSE_ALL (WM_APP + 4)
 
 namespace wp {
 

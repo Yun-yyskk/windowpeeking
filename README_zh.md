@@ -3,9 +3,9 @@
 [English](README.md) | **中文** | ![build](https://github.com/Yun-yyskk/windowpeeking/actions/workflows/build.yml/badge.svg)
 
 Windows 上任何窗口的**无边框、置顶、实时局部预览**：实时看一眼另一个窗口的某一小块，
-而那个窗口继续留在后台干活。
+而那个窗口继续留在后台干活 —— 想同时看几块、看几个窗口，都行。
 
-![左边那个窗口留在后台，右边只镜像它的一小块，实时、无标题栏](docs/screenshot.png)
+![左边那个窗口留在后台，右边实时镜像它的两块区域，都没有标题栏](docs/screenshot.png)
 
 底层用 DWM 缩略图，和 PowerToys 的「裁剪与锁定」（Thumbnail 模式）同一机制，
 但**没有标题栏、没有边框**，只有画面。
@@ -24,9 +24,10 @@ Ctrl+Alt+Q   关闭所有预览并退出
 | 调整大小 | 拖任意一条边或任意一个角（八方向，手写命中测试） |
 | 移动位置 | 按住 **Shift**，在预览框里任意位置拖动 |
 | 调透明度 | 按住 **Shift**，在预览框上滚动鼠标滚轮（10%–100%） |
-| 菜单 | 右键：新建预览、透明度预设、点击穿透、关闭预览、退出 |
+| 菜单 | 右键：新建预览、透明度预设、点击穿透、关闭这个预览、关闭所有预览、退出 |
 | 点击穿透 | 菜单里切换，或点托盘图标 —— 穿透时鼠标**和键盘**都交给下层窗口 |
-| 新建预览 / 退出 | 双击或右键托盘图标 |
+| 再开一个预览 | 再按一次 Ctrl+Alt+P，或右键预览 →「新建预览」，或双击托盘图标。每个预览各管各的：自己的窗口、区域、位置、透明度、穿透状态 |
+| 关闭所有 / 退出 | 托盘图标；托盘提示会显示当前开了几个预览 |
 
 在预览框里普通拖动**什么都不会发生**，这样你在下层窗口干活时不会误拖动它；
 要移动必须按 Shift。
@@ -64,7 +65,7 @@ Windows 上直接能跑；普通版体积更小，但需要 Microsoft Visual C++
 自测（自己建临时窗口，不写注册表、不装任何东西）：
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 29 项：无边框几何、八方向缩放、Shift 移动、滚轮透明度、点击穿透、图标
+build\windowpeeking.exe --selftest         :: 34 项：无边框几何、八方向缩放、Shift 移动、滚轮透明度、点击穿透、图标、多开
 build\windowpeeking.exe --selftest-picker  :: 选区换算与命中测试
 build\windowpeeking.exe --selftest-e2e     :: 真 DWM 缩略图 + 采样像素验证
 build\windowpeeking.exe --demo             :: 上面截图里的那个演示场景
