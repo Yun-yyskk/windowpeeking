@@ -116,7 +116,7 @@ void Repaint(PickerState& st) {
     HGDIOBJ oldFont = SelectObject(st.mem, GetStockObject(DEFAULT_GUI_FONT));
     RECT hint{ 0, st.h - 64, st.w, st.h - 34 };
     DrawTextW(st.mem,
-              L"Drag over the part of the window you want to keep        Esc to cancel",
+              L"拖动框选要一直盯住的区域        Esc 取消",
               -1, &hint, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(st.mem, oldFont);
 

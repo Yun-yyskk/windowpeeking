@@ -10,17 +10,38 @@ Peek at one part of another window while that window stays in the background.
 Built on the DWM thumbnail API, the same mechanism as PowerToys *Crop And Lock*
 (Thumbnail mode), but with **no title bar and no frame** — just the pixels.
 
+## Using it
+
 ```
-Ctrl+Alt+P   pick a window + drag out the region you want
-Ctrl+Alt+O   toggle click-through (clicks pass to the window underneath)
-Ctrl+Alt+Q   quit
+Ctrl+Alt+P   pick a window and drag out the region you want
+Ctrl+Alt+Q   close every preview and quit
 ```
 
-- Drag the body to move the preview; drag an edge or corner to resize (eight
-  directions, hand-rolled hit testing)
+Once a preview exists, everything else is done with the mouse on the preview
+itself and with the tray icon:
+
+| Action | How |
+| --- | --- |
+| Resize | Drag any edge or corner (eight directions, hand-rolled hit testing) |
+| Move | Hold **Shift** and drag anywhere in the preview |
+| Opacity | Hold **Shift** and turn the mouse wheel (10%–100%) |
+| Menu | Right-click: new preview, opacity presets, click-through, close, quit |
+| Click-through | The menu item, or the tray icon — the mouse **and** the keyboard then go to the window underneath |
+| New preview / quit | Double-click or right-click the tray icon |
+
+A plain drag on the body deliberately does **nothing**, so the preview cannot be
+nudged by accident while you are working underneath it; moving always takes
+Shift. The interface is in Chinese.
+
+Other behaviour:
+
 - Size is free-form; the crop is scaled to fit with letterboxing, so the aspect
   ratio of the source region is preserved
-- Stays on top of everything, never appears in the taskbar or Alt-Tab
+- Stays on top of everything, never appears in the taskbar or Alt-Tab, and never
+  steals keyboard focus even when it is not click-through
+- Closing the source window leaves a hint in the preview instead of a dead black
+  rectangle
+- Single instance: starting it again just asks the running copy for a new preview
 
 ## Why not PowerToys Crop And Lock
 
@@ -35,20 +56,22 @@ Requires Windows 10/11 and a C++ toolchain (MSVC 2019+ / Build Tools with the
 Windows SDK). No dependencies, no NuGet, no CMake.
 
 ```cmd
-build.cmd            :: 67 KB, needs the Visual C++ runtime (VCRUNTIME140 / MSVCP140)
-build.cmd release    :: 203 KB, self-contained - system DLLs only, no redist needed
+build.cmd            :: needs the Visual C++ runtime (VCRUNTIME140 / MSVCP140)
+build.cmd release    :: self-contained - system DLLs only, no redist needed
 ```
 
 Output: `build\windowpeeking.exe`. The release build links the C runtime
 statically (`/MT /GL /LTCG`) and imports nothing but GDI32, USER32, KERNEL32 and
-dwmapi, so it runs on a clean Windows install; the normal build is a third of the
-size but wants the Microsoft Visual C++ Redistributable.
+dwmapi, so it runs on a clean Windows install; the normal build is smaller but
+wants the Microsoft Visual C++ Redistributable.
 
-Self-tests (they create their own windows; nothing is installed). 29 checks cover
-both build variants:
+The icon and version resource are compiled from `app.rc`, so the executable also
+carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
+
+Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: borderless geometry, drag, resize, topmost
+build\windowpeeking.exe --selftest         :: 29 checks: borderless geometry, eight-way resize, Shift-move, wheel opacity, click-through, icon
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing
@@ -62,8 +85,9 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
   *minimized* is not.
 - Exclusive full-screen applications (bypassing DWM) cannot be mirrored.
 - Windows on another virtual desktop are cloaked by DWM and appear frozen.
-- v0.1 has no tray icon: it starts silently, and `Ctrl+Alt+Q` removes every
-  preview and exits.
+- While click-through is on, the preview ignores the mouse completely, so use the
+  tray icon to switch it back off.
+- Opacity stops at 10%; below that the preview would be impossible to find again.
 
 ## Credits
 

@@ -13,14 +13,15 @@ const int kMinHeight = 48;
 
 enum MenuId : UINT {
     IDM_PICK = 1,
-    IDM_OPACITY_100,
-    IDM_OPACITY_80,
-    IDM_OPACITY_60,
-    IDM_OPACITY_40,
-    IDM_CLICKTHROUGH,
+    IDM_OPACITY_FIRST,          // IDM_OPACITY_FIRST + i, i indexes kOpacitySteps
+    IDM_CLICKTHROUGH = 100,
     IDM_CLOSE,
     IDM_QUIT,
 };
+
+// 100% .. 20% in 10% steps, top of the submenu first.
+const BYTE kOpacitySteps[] = { 255, 230, 204, 179, 153, 128, 102, 77, 51 };
+const int kOpacityStepCount = static_cast<int>(sizeof(kOpacitySteps) / sizeof(kOpacitySteps[0]));
 
 } // namespace
 
@@ -33,7 +34,7 @@ bool Mirror::RegisterClassOnce(HINSTANCE instance) {
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProcStatic;
     wc.hInstance = instance;
-    wc.hCursor = LoadCursorW(nullptr, IDC_SIZEALL);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
@@ -46,13 +47,17 @@ bool Mirror::RegisterClassOnce(HINSTANCE instance) {
 bool Mirror::Create(HINSTANCE instance, RECT const& screenRect, int width, int height) {
     m_instance = instance;
     const DWORD style = WS_POPUP | WS_CLIPCHILDREN;
-    const DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+    // LAYERED is always on so opacity can change at any time without flicker.
+    // NOACTIVATE is what makes keyboard pass through: this window never takes
+    // focus, so every keystroke keeps going to the app you are really using.
+    const DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE;
     m_hwnd = CreateWindowExW(exStyle, kClassName, L"WindowPeeking", style,
                              screenRect.left, screenRect.top, width, height,
                              nullptr, nullptr, instance, this);
     if (m_hwnd == nullptr) {
         return false;
     }
+    SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
     SetTimer(m_hwnd, 1, 500, nullptr);
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
     return true;
@@ -105,6 +110,8 @@ void Mirror::UpdateThumb() {
                     DWM_TNP_RECTDESTINATION | DWM_TNP_RECTSOURCE;
     props.fSourceClientAreaOnly = FALSE;
     props.fVisible = TRUE;
+    // Opacity is handled by the layered window, not by the thumbnail, so the
+    // letterbox bars fade together with the picture.
     props.opacity = 255;
     props.rcDestination = FitRect(client, m_crop);
     props.rcSource = m_crop;
@@ -130,15 +137,7 @@ void Mirror::SetOpacity(BYTE alpha) {
         return;
     }
     m_opacity = alpha;
-    const auto ex = static_cast<DWORD>(GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE));
-    if (alpha < 255) {
-        if ((ex & WS_EX_LAYERED) == 0) {
-            SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, static_cast<LONG_PTR>(ex | WS_EX_LAYERED));
-        }
-        SetLayeredWindowAttributes(m_hwnd, 0, alpha, LWA_ALPHA);
-    } else if ((ex & WS_EX_LAYERED) != 0) {
-        SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
-    }
+    SetLayeredWindowAttributes(m_hwnd, 0, alpha, LWA_ALPHA);
 }
 
 void Mirror::SetClickThrough(bool on) {
@@ -146,14 +145,11 @@ void Mirror::SetClickThrough(bool on) {
         return;
     }
     m_clickThrough = on;
-    const auto ex = static_cast<DWORD>(GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE));
+    const LONG_PTR ex = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
     if (on) {
-        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE,
-                          static_cast<LONG_PTR>(ex | WS_EX_LAYERED | WS_EX_TRANSPARENT));
-        SetLayeredWindowAttributes(m_hwnd, 0, m_opacity, LWA_ALPHA);
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT);
     } else {
-        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE,
-                          static_cast<LONG_PTR>(ex & ~static_cast<DWORD>(WS_EX_TRANSPARENT)));
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex & ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT));
     }
 }
 
@@ -238,7 +234,7 @@ void Mirror::ApplyDrag(POINT screenPt) {
 
 void Mirror::UpdateCursor(POINT clientPt) {
     const Drag zone = HitZone(clientPt);
-    LPWSTR name = IDC_SIZEALL;
+    LPWSTR name = IDC_ARROW;
     switch (zone) {
     case Drag::Left:
     case Drag::Right:
@@ -257,6 +253,9 @@ void Mirror::UpdateCursor(POINT clientPt) {
         name = IDC_SIZENESW;
         break;
     default:
+        // The body only moves while Shift is held, so advertise that instead of
+        // showing a move cursor that would do nothing.
+        name = (GetKeyState(VK_SHIFT) < 0) ? IDC_SIZEALL : IDC_ARROW;
         break;
     }
     SetCursor(LoadCursorW(nullptr, name));
@@ -267,26 +266,43 @@ void Mirror::ShowMenu(POINT screenPt) {
     if (menu == nullptr) {
         return;
     }
-    AppendMenuW(menu, MF_STRING, IDM_PICK, L"Pick another window\tCtrl+Alt+P");
+    AppendMenuW(menu, MF_STRING, IDM_PICK, L"新建预览\tCtrl+Alt+P");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     HMENU opacity = CreatePopupMenu();
-    AppendMenuW(opacity, MF_STRING | (m_opacity == 255 ? MF_CHECKED : 0), IDM_OPACITY_100, L"100%");
-    AppendMenuW(opacity, MF_STRING | (m_opacity == 204 ? MF_CHECKED : 0), IDM_OPACITY_80, L"80%");
-    AppendMenuW(opacity, MF_STRING | (m_opacity == 153 ? MF_CHECKED : 0), IDM_OPACITY_60, L"60%");
-    AppendMenuW(opacity, MF_STRING | (m_opacity == 102 ? MF_CHECKED : 0), IDM_OPACITY_40, L"40%");
-    AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(opacity), L"Opacity");
-
+    for (int i = 0; i < kOpacityStepCount; ++i) {
+        wchar_t label[16]{};
+        wsprintfW(label, L"%d%%", static_cast<int>(kOpacitySteps[i]) * 100 / 255);
+        AppendMenuW(opacity, MF_STRING | (m_opacity == kOpacitySteps[i] ? MF_CHECKED : 0),
+                    static_cast<UINT_PTR>(IDM_OPACITY_FIRST + i), label);
+    }
+    AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(opacity), L"透明度");
     AppendMenuW(menu, MF_STRING | (m_clickThrough ? MF_CHECKED : 0), IDM_CLICKTHROUGH,
-                L"Click-through\tCtrl+Alt+O");
+                L"点击穿透（鼠标 + 键盘）");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, IDM_CLOSE, L"Close this windowpeeking");
-    AppendMenuW(menu, MF_STRING, IDM_QUIT, L"Quit WindowPeeking\tCtrl+Alt+Q");
+    AppendMenuW(menu, MF_STRING, IDM_CLOSE, L"关闭这个预览");
+    AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 WindowPeeking\tCtrl+Alt+Q");
 
+    // The window is normally WS_EX_NOACTIVATE so it never steals the keyboard.
+    // A popup menu needs the foreground briefly; lend it back right after.
+    const LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, exStyle & ~static_cast<LONG_PTR>(WS_EX_NOACTIVATE));
+    HWND previous = GetForegroundWindow();
     SetForegroundWindow(m_hwnd);
+
     const UINT cmd = static_cast<UINT>(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
                                                       screenPt.x, screenPt.y, 0, m_hwnd, nullptr));
     DestroyMenu(menu);
+
+    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, exStyle);
+    if (previous != nullptr && previous != m_hwnd && IsWindow(previous)) {
+        SetForegroundWindow(previous);
+    }
+
+    if (cmd >= IDM_OPACITY_FIRST && cmd < static_cast<UINT>(IDM_OPACITY_FIRST + kOpacityStepCount)) {
+        SetOpacity(kOpacitySteps[cmd - IDM_OPACITY_FIRST]);
+        return;
+    }
 
     switch (cmd) {
     case IDM_PICK:
@@ -294,10 +310,6 @@ void Mirror::ShowMenu(POINT screenPt) {
             PostMessageW(app, WM_WINDOWPEEKING_PICK, 0, 0);
         }
         break;
-    case IDM_OPACITY_100: SetOpacity(255); break;
-    case IDM_OPACITY_80: SetOpacity(204); break;
-    case IDM_OPACITY_60: SetOpacity(153); break;
-    case IDM_OPACITY_40: SetOpacity(102); break;
     case IDM_CLICKTHROUGH: SetClickThrough(!m_clickThrough); break;
     case IDM_CLOSE: Destroy(); break;
     case IDM_QUIT: PostQuitMessage(0); break;
@@ -335,9 +347,24 @@ LRESULT CALLBACK Mirror::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    // Never become the active window: that is what lets the keyboard keep going
+    // to whatever the user is actually working in.
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
     case WM_LBUTTONDOWN: {
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        m_drag = HitZone(pt);
+        const bool shift = (wParam & MK_SHIFT) != 0;
+        Drag zone = HitZone(pt);
+        if (shift) {
+            zone = Drag::Move;      // Shift anywhere = move
+        } else if (zone == Drag::Move) {
+            zone = Drag::None;      // plain body drag does nothing, so no accidents
+        }
+        m_drag = zone;
+        if (m_drag == Drag::None) {
+            return 0;
+        }
         m_dragStartScreen = pt;
         ClientToScreen(m_hwnd, &m_dragStartScreen);
         GetWindowRect(m_hwnd, &m_dragStartRect);
@@ -376,6 +403,15 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         return TRUE;
     }
 
+    // Shift + wheel = opacity. Without Shift the wheel is left alone.
+    case WM_MOUSEWHEEL: {
+        if ((GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) != 0) {
+            SetOpacity(WheelOpacityStep(m_opacity, GET_WHEEL_DELTA_WPARAM(wParam)));
+            return 0;
+        }
+        break;
+    }
+
     case WM_RBUTTONUP: {
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(m_hwnd, &pt);
@@ -407,7 +443,7 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
             GetClientRect(m_hwnd, &rc);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(230, 230, 230));
-            DrawTextW(dc, L"source closed  -  Ctrl+Alt+P to pick another", -1, &rc,
+            DrawTextW(dc, L"源窗口已关闭 —— 按 Ctrl+Alt+P 重新选择", -1, &rc,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         }
         EndPaint(m_hwnd, &ps);

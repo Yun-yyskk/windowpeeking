@@ -1,4 +1,5 @@
 #include "windowpeeking.h"
+#include <shellapi.h>   // NOTIFYICONDATAW, Shell_NotifyIconW
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -7,12 +8,103 @@ namespace {
 
 const int kHotkeyPick = 101;
 const int kHotkeyQuit = 102;
-const int kHotkeyClick = 103;
 
 const wchar_t* kAppClass = L"WindowPeeking.App";
 
+// Tray icon. There is no main window at all: the icon is the program's face.
+const UINT kTrayId = 1;
+const UINT kTrayCallback = WM_APP + 2;
+const UINT kIconResource = 1;
+
+enum TrayMenuId : UINT {
+    IDM_TRAY_PICK = 300,
+    IDM_TRAY_THROUGH,
+    IDM_TRAY_CLOSE,
+    IDM_TRAY_QUIT,
+};
+
 HWND g_app = nullptr;
+HINSTANCE g_instance = nullptr;
+wp::Mirror* g_mirror = nullptr;
 bool g_pickRequested = false;
+
+HICON LoadAppIcon() {
+    HICON icon = static_cast<HICON>(LoadImageW(g_instance, MAKEINTRESOURCEW(kIconResource),
+                                               IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
+    if (icon == nullptr) {
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    return icon;
+}
+
+bool AddTrayIcon() {
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_app;
+    nid.uID = kTrayId;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = kTrayCallback;
+    nid.hIcon = LoadAppIcon();
+    lstrcpynW(nid.szTip, L"WindowPeeking 窗窥 —— Ctrl+Alt+P 选一块区域", ARRAYSIZE(nid.szTip));
+    return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+}
+
+void RemoveTrayIcon() {
+    if (g_app == nullptr) {
+        return;
+    }
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_app;
+    nid.uID = kTrayId;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+void ShowTrayMenu() {
+    const bool hasPreview = (g_mirror != nullptr) && (g_mirror->Hwnd() != nullptr);
+    const bool through = hasPreview && g_mirror->ClickThrough();
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr) {
+        return;
+    }
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_PICK, L"新建预览...	Ctrl+Alt+P");
+    AppendMenuW(menu, MF_STRING | (through ? MF_CHECKED : 0) | (hasPreview ? 0 : MF_GRAYED),
+                IDM_TRAY_THROUGH, L"点击穿透（鼠标 + 键盘）");
+    AppendMenuW(menu, MF_STRING | (hasPreview ? 0 : MF_GRAYED), IDM_TRAY_CLOSE, L"关闭预览");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_QUIT, L"退出	Ctrl+Alt+Q");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(g_app);
+    const UINT cmd = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, g_app,
+                       nullptr));
+    DestroyMenu(menu);
+    PostMessageW(g_app, WM_NULL, 0, 0);
+
+    switch (cmd) {
+    case IDM_TRAY_PICK:
+        g_pickRequested = true;
+        break;
+    case IDM_TRAY_THROUGH:
+        if (hasPreview) {
+            g_mirror->SetClickThrough(!g_mirror->ClickThrough());
+        }
+        break;
+    case IDM_TRAY_CLOSE:
+        if (hasPreview) {
+            g_mirror->Destroy();
+        }
+        break;
+    case IDM_TRAY_QUIT:
+        PostQuitMessage(0);
+        break;
+    default:
+        break;
+    }
+}
 
 std::string Hex(long long value) {
     char buf[32]{};
@@ -65,6 +157,14 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         default: break;
         }
         return 0;
+    case kTrayCallback:
+        switch (LOWORD(lParam)) {
+        case WM_RBUTTONUP:
+        case WM_CONTEXTMENU: ShowTrayMenu(); break;
+        case WM_LBUTTONDBLCLK: g_pickRequested = true; break;
+        default: break;
+        }
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -79,6 +179,7 @@ bool CreateAppWindow(HINSTANCE instance) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = AppWndProc;
     wc.hInstance = instance;
+    wc.hIcon = LoadAppIcon();
     wc.lpszClassName = kAppClass;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
@@ -101,8 +202,7 @@ void DoPick(HINSTANCE instance, wp::Mirror& mirror) {
 
     if (mirror.Hwnd() == nullptr) {
         if (!mirror.Create(instance, screenRect, width, height)) {
-            MessageBoxW(nullptr, L"Could not create the windowpeeking window.", L"WindowPeeking",
-                        MB_ICONERROR | MB_OK);
+            MessageBoxW(nullptr, L"无法创建预览窗口。", L"WindowPeeking", MB_ICONERROR | MB_OK);
             return;
         }
     } else {
@@ -111,8 +211,9 @@ void DoPick(HINSTANCE instance, wp::Mirror& mirror) {
 
     if (!mirror.Attach(source, crop)) {
         MessageBoxW(nullptr,
-                    L"Could not attach to that window.\n"
-                    L"Some windows (elevated ones, protected ones) refuse DWM thumbnails.",
+                    L"无法接管这个窗口的画面。\n"
+                    L"以管理员权限运行的窗口、受保护的窗口会拒绝 DWM 缩略图。\n"
+                    L"试试用同样的权限运行本程序。",
                     L"WindowPeeking", MB_ICONWARNING | MB_OK);
     }
 }
@@ -484,6 +585,8 @@ int RunSelfTest(HINSTANCE instance) {
         check((style & WS_THICKFRAME) == 0, "no resizable frame (hand-rolled hit testing)", "style=" + Hex(style));
         check((exStyle & WS_EX_TOPMOST) != 0, "always on top", "exstyle=" + Hex(exStyle));
         check((exStyle & WS_EX_TOOLWINDOW) != 0, "kept out of taskbar/alt-tab", "exstyle=" + Hex(exStyle));
+        check((exStyle & WS_EX_NOACTIVATE) != 0, "never takes focus, so the keyboard passes through",
+              "exstyle=" + Hex(exStyle));
 
         RECT wr{};
         RECT cr{};
@@ -498,37 +601,112 @@ int RunSelfTest(HINSTANCE instance) {
         check(ww == cw && wh == ch, "no border pixels around the content", detail);
         check(cw == 420 && ch == 300, "content size honoured exactly", detail);
 
-        // --- hand-rolled resize: drag the bottom-right grip by (+10, +10) ---
-        RECT beforeResize{};
-        GetWindowRect(hwnd, &beforeResize);
-        SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(418, 298));
-        SendMessageW(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(428, 308));
-        SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(428, 308));
-        RECT afterResize{};
-        GetWindowRect(hwnd, &afterResize);
-        char resizeDetail[128]{};
-        std::snprintf(resizeDetail, sizeof(resizeDetail), "%dx%d -> %dx%d",
-                      beforeResize.right - beforeResize.left, beforeResize.bottom - beforeResize.top,
-                      afterResize.right - afterResize.left, afterResize.bottom - afterResize.top);
-        check((afterResize.right - afterResize.left) == (beforeResize.right - beforeResize.left) + 10 &&
-                  (afterResize.bottom - afterResize.top) == (beforeResize.bottom - beforeResize.top) + 10 &&
-                  afterResize.left == beforeResize.left && afterResize.top == beforeResize.top,
-              "drag bottom-right grip resizes from that corner", resizeDetail);
+        // Synthetic mouse messages carry MK_SHIFT exactly like the real thing, so
+        // the modifier rules are verified without touching the physical mouse.
+        auto dragAt = [&](int fromX, int fromY, int toX, int toY, WPARAM modifiers) {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, modifiers | MK_LBUTTON, MAKELPARAM(fromX, fromY));
+            SendMessageW(hwnd, WM_MOUSEMOVE, modifiers | MK_LBUTTON, MAKELPARAM(toX, toY));
+            SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(toX, toY));
+        };
+        auto resetRect = [&]() {
+            SetWindowPos(hwnd, nullptr, 100, 100, 420, 300, SWP_NOZORDER | SWP_NOACTIVATE);
+        };
 
-        // --- hand-rolled move: drag the middle by (+40, +30) ---
-        RECT beforeMove{};
-        GetWindowRect(hwnd, &beforeMove);
-        SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(200, 150));
-        SendMessageW(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(240, 180));
-        SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(240, 180));
-        RECT afterMove{};
-        GetWindowRect(hwnd, &afterMove);
-        char moveDetail[128]{};
-        std::snprintf(moveDetail, sizeof(moveDetail), "(%ld,%ld) -> (%ld,%ld)",
-                      beforeMove.left, beforeMove.top, afterMove.left, afterMove.top);
-        check(afterMove.left == beforeMove.left + 40 && afterMove.top == beforeMove.top + 30 &&
-                  (afterMove.right - afterMove.left) == (beforeMove.right - beforeMove.left),
-              "drag in the middle moves the window without resizing", moveDetail);
+        struct GripCase {
+            const char* label;
+            int fromX, fromY, toX, toY;
+            RECT expected;   // relative to the 100,100 420x300 reset state
+        };
+        const GripCase grips[] = {
+            { "left edge resizes from the left",       2, 150,  -8, 150,  RECT{  90, 100, 520, 400 } },
+            { "right edge resizes from the right",   417, 150, 427, 150,  RECT{ 100, 100, 530, 400 } },
+            { "top edge resizes from the top",       200,   2, 200,  -8,  RECT{ 100,  90, 520, 400 } },
+            { "bottom edge resizes from the bottom", 200, 297, 200, 307,  RECT{ 100, 100, 520, 410 } },
+            { "top-left corner",                       2,   2,  -8,  -8,  RECT{  90,  90, 520, 400 } },
+            { "top-right corner",                    417,   2, 427,  -8,  RECT{ 100,  90, 530, 400 } },
+            { "bottom-left corner",                    2, 297,  -8, 307,  RECT{  90, 100, 520, 410 } },
+            { "bottom-right corner",                 417, 297, 427, 307,  RECT{ 100, 100, 530, 410 } },
+        };
+        for (const GripCase& g : grips) {
+            resetRect();
+            dragAt(g.fromX, g.fromY, g.toX, g.toY, 0);
+            RECT got{};
+            GetWindowRect(hwnd, &got);
+            char gripDetail[160]{};
+            std::snprintf(gripDetail, sizeof(gripDetail), "got (%ld,%ld,%ld,%ld) want (%ld,%ld,%ld,%ld)",
+                          got.left, got.top, got.right, got.bottom, g.expected.left,
+                          g.expected.top, g.expected.right, g.expected.bottom);
+            check(got.left == g.expected.left && got.top == g.expected.top &&
+                      got.right == g.expected.right && got.bottom == g.expected.bottom,
+                  g.label, gripDetail);
+        }
+
+        // A plain drag on the body must not move anything: moving takes Shift.
+        resetRect();
+        dragAt(200, 150, 240, 180, 0);
+        RECT afterPlainDrag{};
+        GetWindowRect(hwnd, &afterPlainDrag);
+        {
+            char plainDragDetail[160]{};
+            std::snprintf(plainDragDetail, sizeof(plainDragDetail),
+                          "(%ld,%ld) after a body drag without Shift", afterPlainDrag.left,
+                          afterPlainDrag.top);
+            check(afterPlainDrag.left == 100 && afterPlainDrag.top == 100 &&
+                      afterPlainDrag.right == 520 && afterPlainDrag.bottom == 400,
+                  "body drag without Shift does nothing (no accidental moves)", plainDragDetail);
+        }
+
+        // Shift on the body moves the window and keeps its size.
+        resetRect();
+        dragAt(200, 150, 240, 180, MK_SHIFT);
+        RECT afterShiftDrag{};
+        GetWindowRect(hwnd, &afterShiftDrag);
+        {
+            char shiftDragDetail[160]{};
+            std::snprintf(shiftDragDetail, sizeof(shiftDragDetail), "(%ld,%ld) %dx%d",
+                          afterShiftDrag.left, afterShiftDrag.top,
+                          afterShiftDrag.right - afterShiftDrag.left,
+                          afterShiftDrag.bottom - afterShiftDrag.top);
+            check(afterShiftDrag.left == 140 && afterShiftDrag.top == 130 &&
+                      (afterShiftDrag.right - afterShiftDrag.left) == 420 &&
+                      (afterShiftDrag.bottom - afterShiftDrag.top) == 300,
+                  "Shift + drag moves the window without resizing", shiftDragDetail);
+        }
+
+        // Shift + wheel changes opacity.
+        auto wheelAt = [&](int delta) {
+            SendMessageW(hwnd, WM_MOUSEWHEEL,
+                         MAKEWPARAM(MK_SHIFT, static_cast<WORD>(delta)), MAKELPARAM(200, 150));
+        };
+        BYTE alphaOut = 0;
+        wheelAt(-120);
+        GetLayeredWindowAttributes(hwnd, nullptr, &alphaOut, nullptr);
+        check(alphaOut == 245, "Shift + wheel down makes it more transparent",
+              "alpha=" + std::to_string(alphaOut));
+        wheelAt(120);
+        GetLayeredWindowAttributes(hwnd, nullptr, &alphaOut, nullptr);
+        check(alphaOut == 255, "Shift + wheel up restores full opacity",
+              "alpha=" + std::to_string(alphaOut));
+        for (int i = 0; i < 40; ++i) {
+            wheelAt(-120);
+        }
+        GetLayeredWindowAttributes(hwnd, nullptr, &alphaOut, nullptr);
+        check(alphaOut == 26, "opacity stops at 10% instead of vanishing", "alpha=" + std::to_string(alphaOut));
+        mirror.SetOpacity(255);
+
+        // Click-through: mouse AND keyboard both pass to whatever is underneath.
+        mirror.SetClickThrough(true);
+        LONG_PTR throughEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        check((throughEx & WS_EX_TRANSPARENT) != 0 &&
+                  (throughEx & WS_EX_NOACTIVATE) != 0,
+              "click-through makes the mouse pass through and keeps focus elsewhere",
+              "exstyle=" + Hex(throughEx));
+        mirror.SetClickThrough(false);
+        LONG_PTR backEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        check((backEx & WS_EX_TRANSPARENT) == 0, "click-through can be switched back off",
+              "exstyle=" + Hex(backEx));
+
+        check(LoadAppIcon() != nullptr, "tray/app icon resource is compiled in", "icon id 1");
 
         SetWindowTextW(hwnd, L"WindowPeeking");
         wchar_t title[64]{};
@@ -636,7 +814,84 @@ LRESULT CALLBACK DemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+// The stage is only there so the README screenshot has a clean backdrop instead
+// of whatever desktop happened to be behind it. It also draws the two captions.
+const RECT kStageRect{ 132, 132, 1408, 688 };
+const RECT kPreviewRect{ 980, 200, 1380, 450 };
+
+LRESULT CALLBACK StageWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+
+        // Soft vertical gradient: dark enough that the black letterbox of the
+        // preview still reads as a separate surface.
+        const int top = 46, bottom = 20;
+        for (int y = 0; y < rc.bottom; ++y) {
+            const int t = (y * 255) / (rc.bottom > 1 ? rc.bottom - 1 : 1);
+            const int v = top + ((bottom - top) * t) / 255;
+            RECT row{ 0, y, rc.right, y + 1 };
+            HBRUSH b = CreateSolidBrush(RGB(v - 8, v - 6, v));
+            FillRect(dc, &row, b);
+            DeleteObject(b);
+        }
+
+        // Elevation hint around the preview: the preview paints its own rect
+        // exactly, so a 2px ring outside it is all that shows.
+        RECT ring{ kPreviewRect.left - kStageRect.left - 2, kPreviewRect.top - kStageRect.top - 2,
+                   kPreviewRect.right - kStageRect.left + 2, kPreviewRect.bottom - kStageRect.top + 2 };
+        HBRUSH ringBrush = CreateSolidBrush(RGB(58, 64, 78));
+        FrameRect(dc, &ring, ringBrush);
+        DeleteObject(ringBrush);
+
+        SetBkMode(dc, TRANSPARENT);
+        HFONT font = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(dc, font);
+        SetTextColor(dc, RGB(130, 138, 152));
+
+        RECT rightLabel{ kPreviewRect.left - kStageRect.left, 462 - kStageRect.top,
+                         kPreviewRect.right - kStageRect.left, 480 - kStageRect.top };
+        DrawTextW(dc, L"WindowPeeking  -  that region, live, no frame", -1, &rightLabel,
+                  DT_LEFT | DT_SINGLELINE);
+
+        SelectObject(dc, oldFont);
+        DeleteObject(font);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 int RunDemo(HINSTANCE instance) {
+    WNDCLASSEXW stage{};
+    stage.cbSize = sizeof(stage);
+    stage.lpfnWndProc = StageWndProc;
+    stage.hInstance = instance;
+    stage.lpszClassName = L"WindowPeeking.DemoStage";
+    RegisterClassExW(&stage);
+    // Topmost, so the stage also wins against whatever window is in front; the
+    // source and preview are created afterwards and therefore sit above it.
+    HWND backdrop = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"WindowPeeking.DemoStage",
+                                    L"", WS_POPUP,
+                                    kStageRect.left, kStageRect.top,
+                                    kStageRect.right - kStageRect.left,
+                                    kStageRect.bottom - kStageRect.top, nullptr, nullptr,
+                                    instance, nullptr);
+    if (backdrop != nullptr) {
+        ShowWindow(backdrop, SW_SHOWNOACTIVATE);
+        UpdateWindow(backdrop);
+    }
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DemoWndProc;
@@ -665,7 +920,7 @@ int RunDemo(HINSTANCE instance) {
     UpdateWindow(source);
 
     // The crop keeps the aspect ratio of its own region, so there is no letterbox.
-    const RECT crop{ 300, 210, 700, 460 };
+    const RECT crop{ 16, 40, 416, 290 };
     const RECT previewRect{ 980, 200, 1380, 450 };
     wp::Mirror mirror;
     if (!mirror.Create(instance, previewRect, previewRect.right - previewRect.left,
@@ -712,6 +967,7 @@ HWND wp::AppWindow() {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    g_instance = instance;
 
     const std::wstring args = cmdLine != nullptr ? cmdLine : L"";
 
@@ -746,19 +1002,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     if (!wp::Mirror::RegisterClassOnce(instance) || !CreateAppWindow(instance)) {
         return 1;
     }
+    AddTrayIcon();
 
     RegisterHotKey(g_app, kHotkeyPick, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
     RegisterHotKey(g_app, kHotkeyQuit, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');
-    RegisterHotKey(g_app, kHotkeyClick, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'O');
 
     wp::Mirror mirror;
+    g_mirror = &mirror;
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (msg.message == WM_HOTKEY && static_cast<int>(msg.wParam) == kHotkeyClick) {
-            if (mirror.Hwnd() != nullptr) {
-                mirror.SetClickThrough(!mirror.ClickThrough());
-            }
-        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
         if (g_pickRequested) {
@@ -769,7 +1021,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
 
     UnregisterHotKey(g_app, kHotkeyPick);
     UnregisterHotKey(g_app, kHotkeyQuit);
-    UnregisterHotKey(g_app, kHotkeyClick);
+    RemoveTrayIcon();
+    g_mirror = nullptr;
     mirror.Destroy();
     if (g_app != nullptr) {
         DestroyWindow(g_app);

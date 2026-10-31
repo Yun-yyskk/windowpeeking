@@ -103,4 +103,17 @@ RECT FitRect(RECT const& dest, RECT const& source) {
     return RECT{ left, top, left + contentW, top + contentH };
 }
 
+// One wheel notch moves opacity by 10/255. Down to 10% so the preview never
+// disappears completely - at 0% it could not be found again to undo it.
+BYTE WheelOpacityStep(BYTE current, int wheelDelta) {
+    int next = static_cast<int>(current) + (wheelDelta > 0 ? 10 : -10);
+    if (next > 255) {
+        next = 255;
+    }
+    if (next < 26) {
+        next = 26;
+    }
+    return static_cast<BYTE>(next);
+}
+
 } // namespace wp

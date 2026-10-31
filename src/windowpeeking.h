@@ -17,7 +17,7 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.1.0"
+#define WINDOWPEEKING_VERSION L"0.2.0"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)
@@ -30,6 +30,8 @@ RECT ClientAreaInScreenSpace(HWND hwnd);
 bool IsUsableSource(HWND hwnd);
 // Fit "source" aspect inside "dest", centered (letterbox). Upstream algorithm.
 RECT FitRect(RECT const& dest, RECT const& source);
+// Opacity for one wheel notch: +/-10, clamped to 10%..100%.
+BYTE WheelOpacityStep(BYTE current, int wheelDelta);
 
 // Result of one drag across the picker overlay.
 struct Selection {
