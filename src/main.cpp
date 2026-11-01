@@ -1,6 +1,7 @@
 #include "windowpeeking.h"
 #include <shellapi.h>   // NOTIFYICONDATAW, Shell_NotifyIconW
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -19,12 +20,54 @@ const UINT kTrayCallback = WM_APP + 2;
 const UINT kIconResource = 1;
 const UINT_PTR kTrayRetryTimer = 1;
 const UINT kTrayRetryMs = 1500;
+const int kTrayMaxAttempts = 20;   // ~30 s of a missing shell, then wait for TaskbarCreated
 
 // Explorer tells every top-level window when it restarts, so the icon can be
 // put back into the (recreated) tray instead of vanishing for the session.
 UINT TaskbarCreatedMessage() {
     static const UINT message = RegisterWindowMessageW(L"TaskbarCreated");
     return message;
+}
+
+// The tray is the only way in, and when it does not appear there is nothing on
+// screen to say why, so every attempt is written to %LOCALAPPDATA%\WindowPeeking\tray.log.
+// Where the log goes: %LOCALAPPDATA%\WindowPeeking\tray.log, or beside the
+// executable when that folder cannot be created (a low-integrity process is
+// refused, and then the reason the tray did not appear is worth having anyway).
+std::wstring OpenLogPath() {
+    wchar_t directory[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", directory, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
+        const std::wstring folder = std::wstring(directory) + L"\\WindowPeeking";
+        if (CreateDirectoryW(folder.c_str(), nullptr) != FALSE ||
+            GetLastError() == ERROR_ALREADY_EXISTS) {
+            return folder + L"\\tray.log";
+        }
+    }
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring path = exe;
+    const size_t slash = path.find_last_of(L'\\');
+    path.erase(slash == std::wstring::npos ? 0 : slash);
+    return path + L"\\tray.log";
+}
+
+void TrayLog(const char* format, ...) {
+    const std::wstring path = OpenLogPath();
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"a") != 0 || file == nullptr) {
+        return;
+    }
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u ", now.wYear, now.wMonth, now.wDay, now.wHour,
+                 now.wMinute, now.wSecond);
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(file, format, args);
+    va_end(args);
+    std::fputc('\n', file);
+    std::fclose(file);
 }
 
 enum TrayMenuId : UINT {
@@ -59,7 +102,15 @@ bool AddTrayIcon() {
     nid.uCallbackMessage = kTrayCallback;
     nid.hIcon = LoadAppIcon();
     lstrcpynW(nid.szTip, L"WindowPeeking 窗窥 —— Ctrl+Alt+P 选一块区域", ARRAYSIZE(nid.szTip));
-    return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    SetLastError(0);
+    const BOOL added = Shell_NotifyIconW(NIM_ADD, &nid);
+    TrayLog("NIM_ADD hwnd=%p icon=%p ok=%d err=%lu", static_cast<void*>(nid.hWnd),
+            static_cast<void*>(nid.hIcon), added, GetLastError());
+    if (added) {
+        nid.uVersion = NOTIFYICON_VERSION_4;
+        TrayLog("NIM_SETVERSION ok=%d err=%lu", Shell_NotifyIconW(NIM_SETVERSION, &nid), GetLastError());
+    }
+    return added != FALSE;
 }
 
 void RemoveTrayIcon() {
@@ -98,11 +149,20 @@ void EnsureTrayIcon() {
     if (g_app == nullptr) {
         return;
     }
+    static int attempts = 0;
+    ++attempts;
     if (AddTrayIcon()) {
+        TrayLog("tray icon is in the shell (attempt %d)", attempts);
         KillTimer(g_app, kTrayRetryTimer);
-    } else {
-        SetTimer(g_app, kTrayRetryTimer, kTrayRetryMs, nullptr);
+        return;
     }
+    if (attempts >= kTrayMaxAttempts) {
+        TrayLog("tray refused %d times, giving up until explorer restarts", attempts);
+        KillTimer(g_app, kTrayRetryTimer);
+        return;
+    }
+    TrayLog("tray refused (attempt %d), retrying in %u ms", attempts, kTrayRetryMs);
+    SetTimer(g_app, kTrayRetryTimer, kTrayRetryMs, nullptr);
 }
 
 wp::Mirror* FindPreview(HWND hwnd) {
@@ -282,7 +342,10 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case kTrayCallback:
         switch (LOWORD(lParam)) {
         case WM_RBUTTONUP:
-        case WM_CONTEXTMENU: ShowTrayMenu(); break;
+        case WM_CONTEXTMENU:
+            TrayLog("tray menu requested");
+            ShowTrayMenu();
+            break;
         case WM_LBUTTONDBLCLK: g_pickRequested = true; break;
         default: break;
         }
@@ -296,6 +359,7 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // Explorer restarted: every tray icon it owned is gone, so ask for ours again.
     const UINT taskbarCreated = TaskbarCreatedMessage();
     if (taskbarCreated != 0 && msg == taskbarCreated) {
+        TrayLog("explorer restarted, re-adding the tray icon");
         EnsureTrayIcon();
         return 0;
     }
@@ -1343,6 +1407,11 @@ HWND wp::AppWindow() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     g_instance = instance;
+    {
+        wchar_t exe[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        TrayLog("start pid=%lu exe=%ls", GetCurrentProcessId(), exe);
+    }
 
     const std::wstring args = cmdLine != nullptr ? cmdLine : L"";
 

@@ -99,6 +99,24 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
   that — Windows refuses to register the icon at all (error 5); launch it from
   Explorer or the Start menu instead.
 
+## No tray icon?
+
+The tray is the only permanent entry point, so the program keeps its own log:
+
+```
+%LOCALAPPDATA%\WindowPeeking\tray.log      or tray.log beside the exe if that folder is refused
+```
+
+Every line is timestamped: `start`, `NIM_ADD ... ok=0 err=5`, `tray refused (attempt N)`,
+`explorer restarted`. `err=5` (access denied) has essentially one cause: the program is
+running at **low integrity**, and Windows does not let a low-integrity process talk to the
+taskbar (medium) — some automation sandboxes do exactly that; start it from Explorer or the
+Start menu instead. Windows 11 also folds new icons into "show hidden icons" (^) by default,
+so a registered icon is simply not on the taskbar until you drag it there.
+
+And the preview's own right-click menu does everything — new preview, opacity,
+click-through, close this preview, quit — so a missing tray icon is inconvenient, not fatal.
+
 ## Credits
 
 The DWM thumbnail parameters and the scale-to-fit maths are derived from
