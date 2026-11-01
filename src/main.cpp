@@ -22,6 +22,13 @@ const UINT_PTR kTrayRetryTimer = 1;
 const UINT kTrayRetryMs = 1500;
 const int kTrayMaxAttempts = 20;   // ~30 s of a missing shell, then wait for TaskbarCreated
 
+// A low-integrity process is not allowed to talk to the taskbar at all
+// (Shell_NotifyIconW answers ERROR_ACCESS_DENIED), and then the program has no
+// face at all. The fallback is a floating button in the same corner: it is the
+// program's own window, so no privilege boundary can take it away.
+const int kIslandSize = 44;
+const int kIslandMargin = 12;
+
 // Explorer tells every top-level window when it restarts, so the icon can be
 // put back into the (recreated) tray instead of vanishing for the session.
 UINT TaskbarCreatedMessage() {
@@ -84,6 +91,14 @@ HINSTANCE g_instance = nullptr;
 std::vector<wp::Mirror*> g_previews;
 bool g_pickRequested = false;
 
+// Floating-button state: whether it replaces the tray icon, and the drag that
+// distinguishes "move me" from "give me a new preview".
+bool g_islandShown = false;
+bool g_islandDragging = false;
+bool g_islandMoved = false;
+POINT g_islandGrab{};
+POINT g_islandOrigin{};
+
 HICON LoadAppIcon() {
     HICON icon = static_cast<HICON>(LoadImageW(g_instance, MAKEINTRESOURCEW(kIconResource),
                                                IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
@@ -92,6 +107,11 @@ HICON LoadAppIcon() {
     }
     return icon;
 }
+
+// Why the last NIM_ADD failed. ERROR_ACCESS_DENIED is permanent (the process is
+// too low-integrity to reach the taskbar), everything else may be a race with a
+// shell that is still starting.
+DWORD g_trayError = 0;
 
 bool AddTrayIcon() {
     NOTIFYICONDATAW nid{};
@@ -104,8 +124,9 @@ bool AddTrayIcon() {
     lstrcpynW(nid.szTip, L"WindowPeeking 窗窥 —— Ctrl+Alt+P 选一块区域", ARRAYSIZE(nid.szTip));
     SetLastError(0);
     const BOOL added = Shell_NotifyIconW(NIM_ADD, &nid);
+    g_trayError = GetLastError();
     TrayLog("NIM_ADD hwnd=%p icon=%p ok=%d err=%lu", static_cast<void*>(nid.hWnd),
-            static_cast<void*>(nid.hIcon), added, GetLastError());
+            static_cast<void*>(nid.hIcon), added, g_trayError);
     if (added) {
         nid.uVersion = NOTIFYICON_VERSION_4;
         TrayLog("NIM_SETVERSION ok=%d err=%lu", Shell_NotifyIconW(NIM_SETVERSION, &nid), GetLastError());
@@ -141,6 +162,94 @@ void UpdateTrayTip() {
         lstrcpynW(nid.szTip, tip, ARRAYSIZE(nid.szTip));
     }
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+    if (g_islandShown) {
+        InvalidateRect(g_app, nullptr, TRUE);
+    }
+}
+
+// Where the floating button lives: the corner of the work area, which is that
+// part of the screen the taskbar does not cover.
+RECT IslandAnchor() {
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    RECT anchor{};
+    anchor.right = work.right - kIslandMargin;
+    anchor.left = anchor.right - kIslandSize;
+    anchor.bottom = work.bottom - kIslandMargin;
+    anchor.top = anchor.bottom - kIslandSize;
+    return anchor;
+}
+
+void PaintIsland(HWND hwnd) {
+    PAINTSTRUCT ps{};
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int width = rc.right;
+    const int height = rc.bottom;
+
+    // Same two colours as the application icon: a bright ring around dark glass.
+    // The window is layered with a black colour key, so black is what "no
+    // window here" looks like: the rounded corners have to be painted with it or
+    // the button would sit in a black square.
+    HBRUSH clear = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(dc, &rc, clear);
+    DeleteObject(clear);
+
+    HBRUSH ring = CreateSolidBrush(RGB(47, 129, 247));
+    HBRUSH body = CreateSolidBrush(RGB(12, 24, 41));
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    HGDIOBJ oldBrush = SelectObject(dc, ring);
+    RoundRect(dc, rc.left, rc.top, width, height, 14, 14);
+    SelectObject(dc, body);
+    RoundRect(dc, rc.left + 2, rc.top + 2, width - 2, height - 2, 12, 12);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(ring);
+    DeleteObject(body);
+
+    HICON icon = LoadAppIcon();
+    if (icon != nullptr) {
+        DrawIconEx(dc, (width - 24) / 2, (height - 24) / 2, icon, 24, 24, 0, nullptr, DI_NORMAL);
+    }
+
+    // A green dot says "something of mine is on screen right now".
+    if (!g_previews.empty()) {
+        HBRUSH live = CreateSolidBrush(RGB(63, 185, 80));
+        HGDIOBJ previous = SelectObject(dc, live);
+        HGDIOBJ previousPen = SelectObject(dc, GetStockObject(NULL_PEN));
+        Ellipse(dc, width - 14, 3, width - 3, 14);
+        SelectObject(dc, previousPen);
+        SelectObject(dc, previous);
+        DeleteObject(live);
+    }
+    EndPaint(hwnd, &ps);
+}
+
+// The tray icon was refused, so the button takes over the job of being visible.
+void ShowIsland() {
+    if (g_app == nullptr || g_islandShown) {
+        return;
+    }
+    const RECT anchor = IslandAnchor();
+    SetLayeredWindowAttributes(g_app, RGB(0, 0, 0), 255, LWA_ALPHA | LWA_COLORKEY);
+    SetWindowPos(g_app, HWND_TOPMOST, anchor.left, anchor.top, kIslandSize, kIslandSize,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    g_islandShown = true;
+    TrayLog("tray unavailable, showing the floating button at (%ld,%ld)", anchor.left, anchor.top);
+    InvalidateRect(g_app, nullptr, TRUE);
+}
+
+// The tray came back (explorer restarted with a working shell): become invisible
+// again, because two faces in the corner would be one too many.
+void HideIsland() {
+    if (g_app == nullptr || !g_islandShown) {
+        return;
+    }
+    SetLayeredWindowAttributes(g_app, RGB(0, 0, 0), 0, LWA_ALPHA | LWA_COLORKEY);
+    SetWindowPos(g_app, HWND_TOPMOST, -32000, -32000, 1, 1, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    g_islandShown = false;
+    g_islandDragging = false;
 }
 
 // The shell is not always ready when the program starts, and it may restart
@@ -154,11 +263,22 @@ void EnsureTrayIcon() {
     if (AddTrayIcon()) {
         TrayLog("tray icon is in the shell (attempt %d)", attempts);
         KillTimer(g_app, kTrayRetryTimer);
+        HideIsland();
+        return;
+    }
+    if (g_trayError == ERROR_ACCESS_DENIED) {
+        // No amount of retrying gets past this one: the shell is a more
+        // privileged process, and Windows refuses to carry our icon request to it.
+        TrayLog("access denied: this process is not allowed to reach the taskbar");
+        KillTimer(g_app, kTrayRetryTimer);
+        ShowIsland();
         return;
     }
     if (attempts >= kTrayMaxAttempts) {
         TrayLog("tray refused %d times, giving up until explorer restarts", attempts);
         KillTimer(g_app, kTrayRetryTimer);
+        // A refusal is not a dead end: the button is the same menu, drawn by us.
+        ShowIsland();
         return;
     }
     TrayLog("tray refused (attempt %d), retrying in %u ms", attempts, kTrayRetryMs);
@@ -333,6 +453,73 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         default: break;
         }
         return 0;
+    // ---- the floating button (the hub window, when the tray is refused) ----
+    case WM_PAINT:
+        if (g_islandShown) {
+            PaintIsland(hwnd);
+            return 0;
+        }
+        break;
+    case WM_ERASEBKGND:
+        if (g_islandShown) {
+            return 1;   // painted in one go, so no flicker
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (g_islandShown) {
+            SetCapture(hwnd);
+            g_islandDragging = true;
+            g_islandMoved = false;
+            GetCursorPos(&g_islandGrab);
+            RECT rect{};
+            GetWindowRect(hwnd, &rect);
+            g_islandOrigin.x = rect.left;
+            g_islandOrigin.y = rect.top;
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+        if (g_islandShown && g_islandDragging) {
+            POINT cursor{};
+            if (GetCursorPos(&cursor)) {
+                const int dx = cursor.x - g_islandGrab.x;
+                const int dy = cursor.y - g_islandGrab.y;
+                // A few pixels of hand-shake is still a click, not a drag.
+                if (!g_islandMoved && (dx > 3 || dx < -3 || dy > 3 || dy < -3)) {
+                    g_islandMoved = true;
+                }
+                if (g_islandMoved) {
+                    SetWindowPos(hwnd, HWND_TOPMOST, g_islandOrigin.x + dx, g_islandOrigin.y + dy, 0,
+                                 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (g_islandShown) {
+            ReleaseCapture();
+            g_islandDragging = false;
+            if (!g_islandMoved) {
+                g_pickRequested = true;
+            }
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDBLCLK:
+        if (g_islandShown) {
+            g_pickRequested = true;
+            return 0;
+        }
+        break;
+    case WM_RBUTTONUP:
+    case WM_CONTEXTMENU:
+        if (g_islandShown) {
+            TrayLog("floating button menu requested");
+            ShowTrayMenu();
+            return 0;
+        }
+        break;
     case WM_TIMER:
         if (wParam == kTrayRetryTimer) {
             EnsureTrayIcon();
@@ -1125,6 +1312,50 @@ int RunSelfTest(HINSTANCE instance) {
             }
             check(TaskbarCreatedMessage() != 0, "TaskbarCreated message registered",
                   "the icon comes back if explorer restarts");
+
+            // The fallback face. When the shell refuses Shell_NotifyIconW there is
+            // still something to click, and it must not land under the taskbar.
+            ShowIsland();
+            RECT islandRect{};
+            GetWindowRect(g_app, &islandRect);
+            char islandDetail[128]{};
+            std::snprintf(islandDetail, sizeof(islandDetail), "%ldx%ld at (%ld,%ld)",
+                          islandRect.right - islandRect.left, islandRect.bottom - islandRect.top,
+                          islandRect.left, islandRect.top);
+            check(islandRect.right - islandRect.left == kIslandSize &&
+                      islandRect.bottom - islandRect.top == kIslandSize,
+                  "floating button is a small square", islandDetail);
+            RECT work{};
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+            check(islandRect.left >= work.left && islandRect.right <= work.right &&
+                      islandRect.top >= work.top && islandRect.bottom <= work.bottom,
+                  "floating button stays inside the work area, clear of the taskbar",
+                  islandDetail);
+            check((GetWindowLongPtrW(g_app, GWL_STYLE) & WS_VISIBLE) != 0,
+                  "floating button is visible", islandDetail);
+            BYTE islandAlpha = 0;
+            GetLayeredWindowAttributes(g_app, nullptr, &islandAlpha, nullptr);
+            char islandAlphaDetail[64]{};
+            std::snprintf(islandAlphaDetail, sizeof(islandAlphaDetail), "alpha=%u",
+                          static_cast<unsigned>(islandAlpha));
+            check(islandAlpha == 255, "floating button is opaque, not a ghost", islandAlphaDetail);
+
+            g_pickRequested = false;
+            SendMessageW(g_app, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(6, 6));
+            SendMessageW(g_app, WM_LBUTTONUP, 0, MAKELPARAM(6, 6));
+            check(g_pickRequested, "clicking the floating button starts a pick", "no drag = click");
+            g_pickRequested = false;
+
+            HideIsland();
+            RECT hiddenRect{};
+            GetWindowRect(g_app, &hiddenRect);
+            BYTE hiddenAlpha = 255;
+            GetLayeredWindowAttributes(g_app, nullptr, &hiddenAlpha, nullptr);
+            char hiddenDetail[96]{};
+            std::snprintf(hiddenDetail, sizeof(hiddenDetail), "alpha=%u at (%ld,%ld)",
+                          static_cast<unsigned>(hiddenAlpha), hiddenRect.left, hiddenRect.top);
+            check(!g_islandShown && hiddenAlpha == 0 && hiddenRect.left < -30000,
+                  "floating button hides again when the tray comes back", hiddenDetail);
         }
 
         if (g_app != nullptr) {
@@ -1447,6 +1678,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
         return 1;
     }
     EnsureTrayIcon();
+    if (args.find(L"--island") != std::wstring::npos) {
+        // Force the fallback face even where the tray works, which is what the
+        // screenshot and the "is it really there?" question need.
+        ShowIsland();
+    }
 
     RegisterHotKey(g_app, kHotkeyPick, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
     RegisterHotKey(g_app, kHotkeyQuit, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');

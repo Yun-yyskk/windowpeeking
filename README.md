@@ -30,7 +30,7 @@ itself and with the tray icon:
 | Menu | Right-click: new preview, opacity presets, click-through, close this preview, close all, quit |
 | Click-through | The menu item, or the tray icon — the mouse **and** the keyboard then go to the window underneath |
 | Another preview | Press Ctrl+Alt+P again, right-click a preview, or double-click the tray icon — previews are independent (own window, own region, own position, opacity and click-through state) |
-| Close all / quit | Tray icon; the tooltip shows how many previews are open |
+| Close all / quit | The tray icon (or the fallback button when Windows refuses one); its tooltip shows how many previews are open |
 
 The preview is a **viewfinder**, not a scaled picture: whatever the frame covers
 is what you see, one source pixel per preview pixel. Drag an edge to cover more
@@ -76,7 +76,7 @@ carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
 Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 41 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, tray owner window, several previews at once
+build\windowpeeking.exe --selftest         :: 48 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, tray owner window, several previews at once, the fallback button
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels -- including that dragging an edge in brings new source pixels into view instead of stretching the old ones
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing
@@ -94,28 +94,47 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
   tray icon to switch it back off.
 - Opacity stops at 10%; below that the preview would be impossible to find again.
 - On Windows 11 the tray icon starts out folded into the "show hidden icons"
-  overflow; drag it onto the taskbar to keep it there. Started from a
-  low-integrity or shell-less context — some automation sandboxes are exactly
-  that — Windows refuses to register the icon at all (error 5); launch it from
-  Explorer or the Start menu instead.
+  overflow; drag it onto the taskbar to keep it there. If Windows refuses to
+  register the icon at all (some automation sandboxes are like that), the
+  program draws its own **floating button** with the same menu.
 
-## No tray icon?
+## No tray icon? The program draws its own
 
-The tray is the only permanent entry point, so the program keeps its own log:
+The tray is the permanent entry point, but registering an icon runs into a Windows rule:
+explorer (the taskbar) is a medium-integrity process, and a process of lower integrity that
+asks it to add an icon is simply refused (`NIM_ADD` returns error 5). Automation sandboxes,
+and anything launched by a lower-privileged parent, hit exactly this. The code is fine; the
+token is not.
+
+<img src="docs/fallback-button.png" width="260" alt="the floating fallback button">
+
+So when registration is refused the program stops waiting and immediately paints a 44×44
+**floating button** just above the bottom-right corner of the work area:
+
+| Click | What happens |
+| --- | --- |
+| Left click / double click | New preview (same as Ctrl+Alt+P) |
+| Right click | The *same* menu as the tray icon: new preview, click-through, close all, quit |
+| Drag | Move it anywhere; it returns to the corner next launch |
+
+A small green dot appears in its corner while previews are open. If the icon did register,
+the button never appears — you get one or the other, never both.
+
+To see it on purpose: `build\windowpeeking.exe --island`.
+
+The program also keeps a log, so you can tell which of the two happened:
 
 ```
 %LOCALAPPDATA%\WindowPeeking\tray.log      or tray.log beside the exe if that folder is refused
 ```
 
-Every line is timestamped: `start`, `NIM_ADD ... ok=0 err=5`, `tray refused (attempt N)`,
-`explorer restarted`. `err=5` (access denied) has essentially one cause: the program is
-running at **low integrity**, and Windows does not let a low-integrity process talk to the
-taskbar (medium) — some automation sandboxes do exactly that; start it from Explorer or the
-Start menu instead. Windows 11 also folds new icons into "show hidden icons" (^) by default,
-so a registered icon is simply not on the taskbar until you drag it there.
+Every line is timestamped: `start`, `NIM_ADD ... ok=0 err=5`, `access denied ...`,
+`tray unavailable, showing the floating button at (x,y)`, `explorer restarted`. Windows 11
+also folds new icons into "show hidden icons" (^) by default, so a registered icon is simply
+not on the taskbar until you drag it there.
 
-And the preview's own right-click menu does everything — new preview, opacity,
-click-through, close this preview, quit — so a missing tray icon is inconvenient, not fatal.
+And the preview's own right-click menu does everything too — new preview, opacity,
+click-through, close this preview, quit — so a missing entry point is inconvenient, not fatal.
 
 ## Credits
 
