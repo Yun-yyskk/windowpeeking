@@ -67,7 +67,7 @@ Windows 上直接能跑；普通版体积更小，但需要 Microsoft Visual C++
 自测（自己建临时窗口，不写注册表、不装任何东西）：
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 36 项：无边框几何、边角当取景框、Shift 平移取景框、滚轮透明度、点击穿透、图标、多开
+build\windowpeeking.exe --selftest         :: 41 项：无边框几何、边角当取景框、Shift 平移取景框、滚轮透明度、点击穿透、图标、托盘窗口、多开
 build\windowpeeking.exe --selftest-picker  :: 选区换算与命中测试
 build\windowpeeking.exe --selftest-e2e     :: 真 DWM 缩略图 + 采样像素验证（含「拖边拉出来的是源窗口新的一块，不是把旧的拉伸」）
 build\windowpeeking.exe --demo             :: 上面截图里的那个演示场景
@@ -81,6 +81,9 @@ build\windowpeeking.exe --demo             :: 上面截图里的那个演示场�
 - 位于另一个虚拟桌面的窗口会被 DWM 隐藏（cloaked），显示为冻结画面。
 - 开着点击穿透时，预览框完全不吃鼠标，要关掉请点托盘图标。
 - 透明度最低 10%，再低就找不回这个框了。
+- 托盘图标在 Windows 11 上默认被折进「显示隐藏的图标」（^）里，拖到任务栏上就固定住了。
+  如果是从低完整性或没有外壳的上下文启动（某些自动化工具的沙箱就是这样），系统会
+  直接拒绝注册托盘图标（错误码 5）；从资源管理器或开始菜单正常启动即可。
 
 ## 致谢
 

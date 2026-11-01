@@ -17,7 +17,7 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.4.0"
+#define WINDOWPEEKING_VERSION L"0.4.1"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)
@@ -76,6 +76,10 @@ public:
     BYTE Opacity() const { return m_opacity; }
     // The region of the source window being shown, in source-window coordinates.
     RECT Crop() const { return m_crop; }
+    // Test seam. A drag tracks the physical mouse, but --selftest runs where the
+    // cursor cannot be moved (a disconnected or locked desktop), so it pins the
+    // point the drag handlers should believe instead.
+    void SetDragCursorOverride(bool armed, POINT screenPoint);
 
 private:
     static LRESULT CALLBACK WndProcStatic(HWND, UINT, WPARAM, LPARAM);
@@ -101,6 +105,8 @@ private:
     void ClampCropToSource();
 
     Drag m_drag = Drag::None;
+    bool m_cursorOverride = false;
+    POINT m_cursorOverridePoint{};
     POINT m_dragStartScreen{};
     RECT m_dragStartRect{};
     RECT m_dragStartCrop{};

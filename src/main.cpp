@@ -17,6 +17,15 @@ const wchar_t* kAppClass = L"WindowPeeking.App";
 const UINT kTrayId = 1;
 const UINT kTrayCallback = WM_APP + 2;
 const UINT kIconResource = 1;
+const UINT_PTR kTrayRetryTimer = 1;
+const UINT kTrayRetryMs = 1500;
+
+// Explorer tells every top-level window when it restarts, so the icon can be
+// put back into the (recreated) tray instead of vanishing for the session.
+UINT TaskbarCreatedMessage() {
+    static const UINT message = RegisterWindowMessageW(L"TaskbarCreated");
+    return message;
+}
 
 enum TrayMenuId : UINT {
     IDM_TRAY_PICK = 300,
@@ -81,6 +90,19 @@ void UpdateTrayTip() {
         lstrcpynW(nid.szTip, tip, ARRAYSIZE(nid.szTip));
     }
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+// The shell is not always ready when the program starts, and it may restart
+// later; keep trying until the icon is really there.
+void EnsureTrayIcon() {
+    if (g_app == nullptr) {
+        return;
+    }
+    if (AddTrayIcon()) {
+        KillTimer(g_app, kTrayRetryTimer);
+    } else {
+        SetTimer(g_app, kTrayRetryTimer, kTrayRetryMs, nullptr);
+    }
 }
 
 wp::Mirror* FindPreview(HWND hwnd) {
@@ -151,12 +173,25 @@ void ShowTrayMenu() {
 
     POINT pt{};
     GetCursorPos(&pt);
+    // A popup menu only behaves (appears, closes on an outside click) when its
+    // owner is the foreground window. Clicking a tray icon does not activate an
+    // app, so borrow the foreground thread's input state to force activation.
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foregroundThread =
+        (foreground != nullptr) ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD thisThread = GetCurrentThreadId();
+    const bool attached = (foregroundThread != 0) && (foregroundThread != thisThread) &&
+                          (AttachThreadInput(foregroundThread, thisThread, TRUE) != FALSE);
     SetForegroundWindow(g_app);
+    BringWindowToTop(g_app);
     const UINT cmd = static_cast<UINT>(
         TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, g_app,
                        nullptr));
     DestroyMenu(menu);
     PostMessageW(g_app, WM_NULL, 0, 0);
+    if (attached) {
+        AttachThreadInput(foregroundThread, thisThread, FALSE);
+    }
 
     switch (cmd) {
     case IDM_TRAY_PICK:
@@ -238,6 +273,12 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         default: break;
         }
         return 0;
+    case WM_TIMER:
+        if (wParam == kTrayRetryTimer) {
+            EnsureTrayIcon();
+            return 0;
+        }
+        break;
     case kTrayCallback:
         switch (LOWORD(lParam)) {
         case WM_RBUTTONUP:
@@ -252,6 +293,12 @@ LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     default:
         break;
     }
+    // Explorer restarted: every tray icon it owned is gone, so ask for ours again.
+    const UINT taskbarCreated = TaskbarCreatedMessage();
+    if (taskbarCreated != 0 && msg == taskbarCreated) {
+        EnsureTrayIcon();
+        return 0;
+    }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -265,9 +312,17 @@ bool CreateAppWindow(HINSTANCE instance) {
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
-    g_app = CreateWindowExW(WS_EX_TOOLWINDOW, kAppClass, L"WindowPeeking", WS_POPUP,
-                            0, 0, 1, 1, nullptr, nullptr, instance, nullptr);
-    return g_app != nullptr;
+    g_app = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kAppClass, L"WindowPeeking",
+                            WS_POPUP, -32000, -32000, 1, 1, nullptr, nullptr, instance, nullptr);
+    if (g_app == nullptr) {
+        return false;
+    }
+    // It must be "shown" even though nobody will ever see it: a hidden window can
+    // never become the foreground owner a tray popup menu needs, which is exactly
+    // why the tray menu stayed dead. Fully transparent, far off-screen.
+    SetLayeredWindowAttributes(g_app, 0, 0, LWA_ALPHA);
+    ShowWindow(g_app, SW_SHOWNA);
+    return true;
 }
 
 // Every pick makes a new preview window. Existing previews keep their own
@@ -614,9 +669,14 @@ int RunE2ETest(HINSTANCE instance) {
     Pump(400);
 
     const int dragY = 150;          // client y, the middle of the 300px tall frame
+    POINT frameOrigin{};
+    ClientToScreen(mirror.Hwnd(), &frameOrigin);
+    const POINT dragTo{ frameOrigin.x - 198, frameOrigin.y + dragY };
+    mirror.SetDragCursorOverride(true, dragTo);
     SendMessageW(mirror.Hwnd(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(2, dragY));
     SendMessageW(mirror.Hwnd(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-198, dragY));
     SendMessageW(mirror.Hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(-198, dragY));
+    mirror.SetDragCursorOverride(false, POINT{});
     Pump(600);
 
     GetWindowRect(mirror.Hwnd(), &mr);
@@ -713,10 +773,18 @@ int RunSelfTest(HINSTANCE instance) {
 
         // Synthetic mouse messages carry MK_SHIFT exactly like the real thing, so
         // the modifier rules are verified without touching the physical mouse.
+        // A real drag follows the physical cursor, which this test cannot move (a
+        // disconnected desktop refuses SetCursorPos), so the frame is told exactly
+        // where the mouse would be instead.
         auto dragAt = [&](int fromX, int fromY, int toX, int toY, WPARAM modifiers) {
+            POINT windowOrigin{};
+            ClientToScreen(hwnd, &windowOrigin);
+            const POINT dragTo{ windowOrigin.x + toX, windowOrigin.y + toY };
+            mirror.SetDragCursorOverride(true, dragTo);
             SendMessageW(hwnd, WM_LBUTTONDOWN, modifiers | MK_LBUTTON, MAKELPARAM(fromX, fromY));
             SendMessageW(hwnd, WM_MOUSEMOVE, modifiers | MK_LBUTTON, MAKELPARAM(toX, toY));
             SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(toX, toY));
+            mirror.SetDragCursorOverride(false, POINT{});
         };
 
         // Resizing means "look at more of the source", so the frame needs a real
@@ -843,9 +911,9 @@ int RunSelfTest(HINSTANCE instance) {
             check(afterShiftDrag.left == 100 && afterShiftDrag.top == 100 &&
                       (afterShiftDrag.right - afterShiftDrag.left) == 420 &&
                       (afterShiftDrag.bottom - afterShiftDrag.top) == 300 &&
-                      afterShiftCrop.left == 140 && afterShiftCrop.top == 80 &&
-                      afterShiftCrop.right == 560 && afterShiftCrop.bottom == 380,
-                  "Shift + drag slides the crop without moving the frame", shiftDragDetail);
+                      afterShiftCrop.left == 60 && afterShiftCrop.top == 20 &&
+                      afterShiftCrop.right == 480 && afterShiftCrop.bottom == 320,
+                  "Shift + drag pulls the picture: the crop slides the other way", shiftDragDetail);
         }
 
         // Shift + wheel changes opacity.
@@ -943,6 +1011,57 @@ int RunSelfTest(HINSTANCE instance) {
 
         DestroyAllPreviews();
         check(g_previews.empty(), "closing all previews empties the list", "previews=0");
+
+        // The tray icon is the program's whole face, and a popup menu owned by a
+        // hidden window never appears -- that is what kept the tray dead. The hub
+        // must therefore be shown, and invisible only because it is a fully
+        // transparent 1x1 window parked far off-screen.
+        if (g_app != nullptr) {
+            const LONG_PTR hubStyle = GetWindowLongPtrW(g_app, GWL_STYLE);
+            const LONG_PTR hubEx = GetWindowLongPtrW(g_app, GWL_EXSTYLE);
+            char hubDetail[160]{};
+            std::snprintf(hubDetail, sizeof(hubDetail), "style=%s exstyle=%s", Hex(hubStyle).c_str(),
+                          Hex(hubEx).c_str());
+            check((hubStyle & WS_VISIBLE) != 0,
+                  "hub window is shown, so a tray menu has a foreground owner", hubDetail);
+            check((hubEx & WS_EX_LAYERED) != 0, "hub window is layered: shown but unpainted",
+                  hubDetail);
+
+            BYTE hubAlpha = 255;
+            DWORD hubFlags = 0;
+            const BOOL hubLayered = GetLayeredWindowAttributes(g_app, nullptr, &hubAlpha, &hubFlags);
+            char alphaDetail[96]{};
+            std::snprintf(alphaDetail, sizeof(alphaDetail), "alpha=%u flags=%s",
+                          static_cast<unsigned>(hubAlpha), Hex(hubFlags).c_str());
+            check(hubLayered != FALSE && hubAlpha == 0 && (hubFlags & LWA_ALPHA) != 0,
+                  "hub window is fully transparent", alphaDetail);
+
+            RECT hubRect{};
+            GetWindowRect(g_app, &hubRect);
+            char parkDetail[96]{};
+            std::snprintf(parkDetail, sizeof(parkDetail), "(%ld,%ld)-(%ld,%ld)", hubRect.left,
+                          hubRect.top, hubRect.right, hubRect.bottom);
+            check(hubRect.right < -30000 && hubRect.bottom < -30000,
+                  "hub window parked far off-screen", parkDetail);
+
+            // Registering the icon needs a real tray: a low-integrity or headless
+            // session is refused with ERROR_ACCESS_DENIED, which is the harness's
+            // problem rather than the program's, so it is reported, not failed.
+            if (AddTrayIcon()) {
+                check(true, "tray icon registered with the shell", "Shell_NotifyIconW(NIM_ADD)");
+                RemoveTrayIcon();
+            } else {
+                const DWORD trayError = GetLastError();
+                char skip[160]{};
+                std::snprintf(skip, sizeof(skip),
+                              "  SKIP  tray icon registration (this session refuses it, err=%lu)",
+                              trayError);
+                report += skip;
+                report += "\r\n";
+            }
+            check(TaskbarCreatedMessage() != 0, "TaskbarCreated message registered",
+                  "the icon comes back if explorer restarts");
+        }
 
         if (g_app != nullptr) {
             DestroyWindow(g_app);
@@ -1258,7 +1377,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     if (!wp::Mirror::RegisterClassOnce(instance) || !CreateAppWindow(instance)) {
         return 1;
     }
-    AddTrayIcon();
+    EnsureTrayIcon();
 
     RegisterHotKey(g_app, kHotkeyPick, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'P');
     RegisterHotKey(g_app, kHotkeyQuit, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q');

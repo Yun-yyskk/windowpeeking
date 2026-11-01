@@ -76,7 +76,7 @@ carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
 Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 36 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, several previews at once
+build\windowpeeking.exe --selftest         :: 41 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, tray owner window, several previews at once
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels -- including that dragging an edge in brings new source pixels into view instead of stretching the old ones
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing
@@ -93,6 +93,11 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
 - While click-through is on, the preview ignores the mouse completely, so use the
   tray icon to switch it back off.
 - Opacity stops at 10%; below that the preview would be impossible to find again.
+- On Windows 11 the tray icon starts out folded into the "show hidden icons"
+  overflow; drag it onto the taskbar to keep it there. Started from a
+  low-integrity or shell-less context — some automation sandboxes are exactly
+  that — Windows refuses to register the icon at all (error 5); launch it from
+  Explorer or the Start menu instead.
 
 ## Credits
 

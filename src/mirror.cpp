@@ -156,6 +156,11 @@ void Mirror::SetClickThrough(bool on) {
     }
 }
 
+void Mirror::SetDragCursorOverride(bool armed, POINT screenPoint) {
+    m_cursorOverride = armed;
+    m_cursorOverridePoint = screenPoint;
+}
+
 Mirror::Drag Mirror::HitZone(POINT clientPt) const {
     RECT rc{};
     GetClientRect(m_hwnd, &rc);
@@ -243,8 +248,10 @@ void Mirror::ApplyDrag(POINT screenPt) {
     if (m_drag == Drag::Reframe) {
         const int cw = m_dragStartCrop.right - m_dragStartCrop.left;
         const int ch = m_dragStartCrop.bottom - m_dragStartCrop.top;
-        int x = m_dragStartCrop.left + dcx;
-        int y = m_dragStartCrop.top + dcy;
+        // Dragging right pulls the picture right, which brings the part of the
+        // source to the LEFT of the crop into view: the crop moves the other way.
+        int x = m_dragStartCrop.left - dcx;
+        int y = m_dragStartCrop.top - dcy;
         int maxX = srcW - cw;
         int maxY = srcH - ch;
         if (maxX < 0) maxX = 0;
@@ -480,9 +487,13 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEMOVE: {
         const POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (m_drag != Drag::None) {
-            POINT screen = pt;
-            ClientToScreen(m_hwnd, &screen);
-            ApplyDrag(screen);
+            // Deliberately the cursor's own screen position rather than lParam:
+            // client coordinates are relative to a window that this very drag is
+            // moving, so they lag a step behind and a fast edge drag stutters.
+            POINT cursor = m_cursorOverridePoint;
+            if (m_cursorOverride || GetCursorPos(&cursor)) {
+                ApplyDrag(cursor);
+            }
         } else {
             UpdateCursor(pt);
         }
