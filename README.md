@@ -23,22 +23,25 @@ itself and with the tray icon:
 
 | Action | How |
 | --- | --- |
-| Resize | Drag any edge or corner (eight directions, hand-rolled hit testing) |
-| Move | Hold **Shift** and drag anywhere in the preview |
+| See more or less | Drag any edge or corner: the frame grows out over the source at 1:1, nothing is rescaled |
+| Move on screen | Drag the body |
+| Slide the view | Hold **Shift** and drag the body: same size, same place, a different part of the source |
 | Opacity | Hold **Shift** and turn the mouse wheel (10%–100%) |
 | Menu | Right-click: new preview, opacity presets, click-through, close this preview, close all, quit |
 | Click-through | The menu item, or the tray icon — the mouse **and** the keyboard then go to the window underneath |
 | Another preview | Press Ctrl+Alt+P again, right-click a preview, or double-click the tray icon — previews are independent (own window, own region, own position, opacity and click-through state) |
 | Close all / quit | Tray icon; the tooltip shows how many previews are open |
 
-A plain drag on the body deliberately does **nothing**, so the preview cannot be
-nudged by accident while you are working underneath it; moving always takes
-Shift. The interface is in Chinese.
+The preview is a **viewfinder**, not a scaled picture: whatever the frame covers
+is what you see, one source pixel per preview pixel. Drag an edge to cover more
+of the window, drag the body to move the frame across the screen, and Shift-drag
+to slide the frame over the window without moving it on screen. Edges and
+corners stop at the source window's own borders. The interface is in Chinese.
 
 Other behaviour:
 
-- Size is free-form; the crop is scaled to fit with letterboxing, so the aspect
-  ratio of the source region is preserved
+- The frame's size *is* the crop: resize it and you look at a bigger or smaller
+  piece of the source, never at a rescaled copy of the same piece
 - Stays on top of everything, never appears in the taskbar or Alt-Tab, and never
   steals keyboard focus even when it is not click-through
 - Closing the source window leaves a hint in the preview instead of a dead black
@@ -50,7 +53,7 @@ Other behaviour:
 PowerToys' thumbnail mode works well but keeps a normal window frame including
 the title bar. If you want a small strip of a chat window or a video pinned in a
 corner with nothing but pixels, that frame costs space and attention.
-WindowPeeking drops it: `WS_POPUP`, no caption, no border, black letterbox.
+WindowPeeking drops it: `WS_POPUP`, no caption, no border, nothing but pixels.
 
 ## Build
 
@@ -73,9 +76,9 @@ carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
 Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 34 checks: borderless geometry, eight-way resize, Shift-move, wheel opacity, click-through, icon, several previews at once
+build\windowpeeking.exe --selftest         :: 36 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, several previews at once
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
-build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels
+build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels -- including that dragging an edge in brings new source pixels into view instead of stretching the old ones
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing
 ```
 

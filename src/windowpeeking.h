@@ -17,7 +17,7 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.3.0"
+#define WINDOWPEEKING_VERSION L"0.4.0"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)
@@ -74,6 +74,8 @@ public:
     void SetClickThrough(bool on);
     bool ClickThrough() const { return m_clickThrough; }
     BYTE Opacity() const { return m_opacity; }
+    // The region of the source window being shown, in source-window coordinates.
+    RECT Crop() const { return m_crop; }
 
 private:
     static LRESULT CALLBACK WndProcStatic(HWND, UINT, WPARAM, LPARAM);
@@ -92,14 +94,16 @@ private:
     bool m_clickThrough = false;
     bool m_sourceGone = false;
 
-    enum class Drag { None, Move, Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft, BottomRight };
+    enum class Drag { None, Move, Reframe, Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft, BottomRight };
     Drag HitZone(POINT clientPt) const;
     void ApplyDrag(POINT screenPt);
     void UpdateCursor(POINT clientPt);
+    void ClampCropToSource();
 
     Drag m_drag = Drag::None;
     POINT m_dragStartScreen{};
     RECT m_dragStartRect{};
+    RECT m_dragStartCrop{};
 };
 
 } // namespace wp

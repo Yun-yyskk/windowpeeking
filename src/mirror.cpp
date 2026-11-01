@@ -74,13 +74,15 @@ bool Mirror::Attach(HWND source, RECT const& cropInWindowSpace) {
     m_crop = cropInWindowSpace;
     m_sourceGone = false;
 
-    const int width = m_crop.right - m_crop.left;
-    const int height = m_crop.bottom - m_crop.top;
-    if (width <= 0 || height <= 0) {
+    const int cropW = m_crop.right - m_crop.left;
+    const int cropH = m_crop.bottom - m_crop.top;
+    if (cropW <= 0 || cropH <= 0) {
         return false;
     }
 
-    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, width, height,
+    // The frame is a window onto a piece of the source at 1:1, so its own size is
+    // the crop size: one source pixel, one preview pixel.
+    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, cropW, cropH,
                  SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
     if (FAILED(DwmRegisterThumbnail(m_hwnd, source, &m_thumb))) {
@@ -173,6 +175,40 @@ Mirror::Drag Mirror::HitZone(POINT clientPt) const {
     return Drag::Move;
 }
 
+void Mirror::ClampCropToSource() {
+    if (m_source == nullptr || m_thumb == nullptr || !IsWindow(m_source)) {
+        return;
+    }
+    RECT src{};
+    if (!GetWindowRect(m_source, &src)) {
+        return;
+    }
+    const int srcW = src.right - src.left;
+    const int srcH = src.bottom - src.top;
+
+    RECT c = m_crop;
+    if (c.left < 0) c.left = 0;
+    if (c.top < 0) c.top = 0;
+    if (c.right > srcW) c.right = srcW;
+    if (c.bottom > srcH) c.bottom = srcH;
+    if (c.right - c.left < 8 || c.bottom - c.top < 8) {
+        return;     // the source shrank below anything usable; leave the frame be
+    }
+    if (c.left == m_crop.left && c.top == m_crop.top && c.right == m_crop.right &&
+        c.bottom == m_crop.bottom) {
+        return;
+    }
+
+    m_crop = c;
+    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, c.right - c.left, c.bottom - c.top,
+                 SWP_NOMOVE | SWP_NOACTIVATE);
+    UpdateThumb();
+}
+
+// The drag model, with the frame understood as a window onto the source:
+//   edges and corners  grow/shrink the crop   (look at more or less of the source)
+//   body drag          moves the frame on screen, crop untouched
+//   Shift + body drag  slides the crop over the source, frame untouched
 void Mirror::ApplyDrag(POINT screenPt) {
     if (m_drag == Drag::None || m_hwnd == nullptr) {
         return;
@@ -180,57 +216,111 @@ void Mirror::ApplyDrag(POINT screenPt) {
     const int dx = screenPt.x - m_dragStartScreen.x;
     const int dy = screenPt.y - m_dragStartScreen.y;
 
-    RECT r = m_dragStartRect;
-    switch (m_drag) {
-    case Drag::Move:
+    if (m_drag == Drag::Move) {
+        RECT r = m_dragStartRect;
         OffsetRect(&r, dx, dy);
-        break;
-    case Drag::Left:
-        r.left += dx;
-        if (r.right - r.left < kMinWidth) r.left = r.right - kMinWidth;
-        break;
-    case Drag::Right:
-        r.right += dx;
-        if (r.right - r.left < kMinWidth) r.right = r.left + kMinWidth;
-        break;
-    case Drag::Top:
-        r.top += dy;
-        if (r.bottom - r.top < kMinHeight) r.top = r.bottom - kMinHeight;
-        break;
-    case Drag::Bottom:
-        r.bottom += dy;
-        if (r.bottom - r.top < kMinHeight) r.bottom = r.top + kMinHeight;
-        break;
-    case Drag::TopLeft:
-        r.left += dx;
-        r.top += dy;
-        if (r.right - r.left < kMinWidth) r.left = r.right - kMinWidth;
-        if (r.bottom - r.top < kMinHeight) r.top = r.bottom - kMinHeight;
-        break;
-    case Drag::TopRight:
-        r.right += dx;
-        r.top += dy;
-        if (r.right - r.left < kMinWidth) r.right = r.left + kMinWidth;
-        if (r.bottom - r.top < kMinHeight) r.top = r.bottom - kMinHeight;
-        break;
-    case Drag::BottomLeft:
-        r.left += dx;
-        r.bottom += dy;
-        if (r.right - r.left < kMinWidth) r.left = r.right - kMinWidth;
-        if (r.bottom - r.top < kMinHeight) r.bottom = r.top + kMinHeight;
-        break;
-    case Drag::BottomRight:
-        r.right += dx;
-        r.bottom += dy;
-        if (r.right - r.left < kMinWidth) r.right = r.left + kMinWidth;
-        if (r.bottom - r.top < kMinHeight) r.bottom = r.top + kMinHeight;
-        break;
-    default:
+        SetWindowPos(m_hwnd, HWND_TOPMOST, r.left, r.top, 0, 0,
+                     SWP_NOSIZE | SWP_NOACTIVATE);
         return;
     }
 
-    SetWindowPos(m_hwnd, HWND_TOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                 SWP_NOACTIVATE);
+    if (m_source == nullptr || m_thumb == nullptr || !IsWindow(m_source)) {
+        return;
+    }
+    RECT src{};
+    if (!GetWindowRect(m_source, &src)) {
+        return;
+    }
+    const int srcW = src.right - src.left;
+    const int srcH = src.bottom - src.top;
+    if (srcW <= 0 || srcH <= 0) {
+        return;
+    }
+
+    const int dcx = dx;
+    const int dcy = dy;
+
+    if (m_drag == Drag::Reframe) {
+        const int cw = m_dragStartCrop.right - m_dragStartCrop.left;
+        const int ch = m_dragStartCrop.bottom - m_dragStartCrop.top;
+        int x = m_dragStartCrop.left + dcx;
+        int y = m_dragStartCrop.top + dcy;
+        int maxX = srcW - cw;
+        int maxY = srcH - ch;
+        if (maxX < 0) maxX = 0;
+        if (maxY < 0) maxY = 0;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x > maxX) x = maxX;
+        if (y > maxY) y = maxY;
+        const RECT moved{ x, y, x + cw, y + ch };
+        if (moved.left == m_crop.left && moved.top == m_crop.top) {
+            return;
+        }
+        m_crop = moved;
+        UpdateThumb();
+        return;
+    }
+
+    RECT c = m_dragStartCrop;
+    switch (m_drag) {
+    case Drag::Left: c.left += dcx; break;
+    case Drag::Right: c.right += dcx; break;
+    case Drag::Top: c.top += dcy; break;
+    case Drag::Bottom: c.bottom += dcy; break;
+    case Drag::TopLeft: c.left += dcx; c.top += dcy; break;
+    case Drag::TopRight: c.right += dcx; c.top += dcy; break;
+    case Drag::BottomLeft: c.left += dcx; c.bottom += dcy; break;
+    case Drag::BottomRight: c.right += dcx; c.bottom += dcy; break;
+    default: return;
+    }
+
+    // There is only the source to look at, so the frame cannot leave it.
+    if (c.left < 0) c.left = 0;
+    if (c.top < 0) c.top = 0;
+    if (c.right > srcW) c.right = srcW;
+    if (c.bottom > srcH) c.bottom = srcH;
+
+    const bool movedLeft = (m_drag == Drag::Left || m_drag == Drag::TopLeft ||
+                            m_drag == Drag::BottomLeft);
+    const bool movedTop = (m_drag == Drag::Top || m_drag == Drag::TopLeft ||
+                           m_drag == Drag::TopRight);
+    const int minW = kMinWidth;
+    const int minH = kMinHeight;
+    if (c.right - c.left < minW) {
+        if (movedLeft) {
+            c.left = c.right - minW;
+        } else {
+            c.right = c.left + minW;
+        }
+    }
+    if (c.bottom - c.top < minH) {
+        if (movedTop) {
+            c.top = c.bottom - minH;
+        } else {
+            c.bottom = c.top + minH;
+        }
+    }
+
+    const int cw = c.right - c.left;
+    const int ch = c.bottom - c.top;
+
+    RECT r = m_dragStartRect;
+    if (movedLeft) {
+        r.left = r.right - cw;      // the opposite edge stays put
+    } else {
+        r.right = r.left + cw;
+    }
+    if (movedTop) {
+        r.top = r.bottom - ch;
+    } else {
+        r.bottom = r.top + ch;
+    }
+
+    m_crop = c;
+    SetWindowPos(m_hwnd, HWND_TOPMOST, r.left, r.top, r.right - r.left,
+                 r.bottom - r.top, SWP_NOACTIVATE);
+    UpdateThumb();
 }
 
 void Mirror::UpdateCursor(POINT clientPt) {
@@ -254,9 +344,8 @@ void Mirror::UpdateCursor(POINT clientPt) {
         name = IDC_SIZENESW;
         break;
     default:
-        // The body only moves while Shift is held, so advertise that instead of
-        // showing a move cursor that would do nothing.
-        name = (GetKeyState(VK_SHIFT) < 0) ? IDC_SIZEALL : IDC_ARROW;
+        // Body: drag moves the frame, Shift + drag slides the crop underneath it.
+        name = (GetKeyState(VK_SHIFT) < 0) ? IDC_HAND : IDC_SIZEALL;
         break;
     }
     SetCursor(LoadCursorW(nullptr, name));
@@ -373,10 +462,8 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const bool shift = (wParam & MK_SHIFT) != 0;
         Drag zone = HitZone(pt);
-        if (shift) {
-            zone = Drag::Move;      // Shift anywhere = move
-        } else if (zone == Drag::Move) {
-            zone = Drag::None;      // plain body drag does nothing, so no accidents
+        if (zone == Drag::Move && shift) {
+            zone = Drag::Reframe;   // Shift on the body slides the crop
         }
         m_drag = zone;
         if (m_drag == Drag::None) {
@@ -385,6 +472,7 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         m_dragStartScreen = pt;
         ClientToScreen(m_hwnd, &m_dragStartScreen);
         GetWindowRect(m_hwnd, &m_dragStartRect);
+        m_dragStartCrop = m_crop;
         SetCapture(m_hwnd);
         return 0;
     }
@@ -443,6 +531,8 @@ LRESULT Mirror::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (m_source != nullptr && !IsWindow(m_source)) {
             MarkSourceGone();
+        } else if (m_source != nullptr) {
+            ClampCropToSource();    // the source window may have been resized
         }
         return 0;
 
