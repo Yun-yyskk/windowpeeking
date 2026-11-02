@@ -13,6 +13,12 @@ Built on the DWM thumbnail API, the same mechanism as PowerToys *Crop And Lock*
 
 ## Using it
 
+**First run: double-click `install.cmd`.** It installs the program to
+`%LOCALAPPDATA%\Programs\WindowPeeking`, adds a desktop shortcut and starts it from
+there — which also sidesteps a Windows trap: an exe started out of this repository
+folder runs at low integrity, and a low-integrity process may not register a tray
+icon (see "No tray icon?" below). Already installed elsewhere? Just run the exe.
+
 ```
 Ctrl+Alt+P   pick a window and drag out the region you want
 Ctrl+Alt+Q   close every preview and quit
