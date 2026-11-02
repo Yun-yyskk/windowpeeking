@@ -1,4 +1,5 @@
 #include "windowpeeking.h"
+#include <shlobj.h>     // IShellLinkW, SHGetFolderPathW -- the desktop shortcut
 #include <shellapi.h>   // NOTIFYICONDATAW, Shell_NotifyIconW
 #include <algorithm>
 #include <cstdarg>
@@ -81,6 +82,7 @@ enum TrayMenuId : UINT {
     IDM_TRAY_PICK = 300,
     IDM_TRAY_THROUGH,
     IDM_TRAY_CLOSE,
+    IDM_TRAY_INSTALL,
     IDM_TRAY_QUIT,
 };
 
@@ -285,6 +287,99 @@ void EnsureTrayIcon() {
     SetTimer(g_app, kTrayRetryTimer, kTrayRetryMs, nullptr);
 }
 
+// Windows will not let a process whose integrity level sits below the
+// taskbar's register an icon, and a program that lives inside a folder some
+// sandbox has marked gets started at low integrity every single time -- whoever
+// double-clicks it. Moving the exe somewhere ordinary is the only cure, so do
+// it for the user and leave a shortcut behind.
+std::wstring LocalAppDataFolder() {
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
+    return (length > 0 && length < MAX_PATH) ? std::wstring(buffer) : std::wstring();
+}
+
+// Pure, so the self test can check it without touching anybody's disk.
+std::wstring InstallTargetExe(const std::wstring& localAppData) {
+    if (localAppData.empty()) {
+        return std::wstring();
+    }
+    std::wstring dir = localAppData;
+    if (dir.back() != L'\\') {
+        dir += L'\\';
+    }
+    return dir + L"Programs\\WindowPeeking\\windowpeeking.exe";
+}
+
+std::wstring EnvFolder(const wchar_t* name) {
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD length = GetEnvironmentVariableW(name, buffer, MAX_PATH);
+    return (length > 0 && length < MAX_PATH) ? std::wstring(buffer) : std::wstring();
+}
+
+std::wstring DesktopFolder() {
+    wchar_t buffer[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT,
+                                   buffer))) {
+        return std::wstring(buffer);
+    }
+    return std::wstring();
+}
+
+void MakeShortcut(const std::wstring& lnkPath, const std::wstring& exePath, const std::wstring& workDir) {
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
+        return;
+    }
+    IShellLinkW* link = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                   reinterpret_cast<void**>(&link)))) {
+        link->SetPath(exePath.c_str());
+        link->SetWorkingDirectory(workDir.c_str());
+        link->SetIconLocation(exePath.c_str(), 0);
+        link->SetDescription(L"WindowPeeking 窗窥");
+        IPersistFile* file = nullptr;
+        if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file)))) {
+            file->Save(lnkPath.c_str(), TRUE);
+            file->Release();
+        }
+        link->Release();
+    }
+    CoUninitialize();
+}
+
+// Returns the path of the copy, or an empty string when it could not be made.
+std::wstring InstallToUserFolder() {
+    wchar_t self[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, self, MAX_PATH) == 0) {
+        return std::wstring();
+    }
+    const std::wstring local = LocalAppDataFolder();
+    const std::wstring target = InstallTargetExe(local);
+    if (target.empty()) {
+        return std::wstring();
+    }
+    const std::wstring dir = target.substr(0, target.find_last_of(L'\\'));
+    const std::wstring programs = local + L"\\Programs";
+    if (!CreateDirectoryW(programs.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        TrayLog("install: cannot make %ls err=%lu", programs.c_str(), GetLastError());
+        return std::wstring();
+    }
+    if (!CreateDirectoryW(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        TrayLog("install: cannot make %ls err=%lu", dir.c_str(), GetLastError());
+        return std::wstring();
+    }
+    if (!CopyFileW(self, target.c_str(), FALSE)) {
+        TrayLog("install: CopyFileW failed err=%lu", GetLastError());
+        return std::wstring();
+    }
+    const std::wstring desktop = DesktopFolder();
+    if (!desktop.empty()) {
+        MakeShortcut(desktop + L"\\WindowPeeking.lnk", target, dir);
+    }
+    TrayLog("install: copied to %ls", target.c_str());
+    return target;
+}
+
 wp::Mirror* FindPreview(HWND hwnd) {
     for (wp::Mirror* preview : g_previews) {
         if (preview != nullptr && preview->Hwnd() == hwnd) {
@@ -349,6 +444,11 @@ void ShowTrayMenu() {
                 IDM_TRAY_THROUGH, L"点击穿透所有预览（鼠标 + 键盘）");
     AppendMenuW(menu, MF_STRING | (hasPreview ? 0 : MF_GRAYED), IDM_TRAY_CLOSE, L"关闭所有预览");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    // Only worth saying while the tray icon is missing: it is the fix.
+    if (g_islandShown) {
+        AppendMenuW(menu, MF_STRING, IDM_TRAY_INSTALL, L"装到用户目录（这样才有托盘图标）...");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
     AppendMenuW(menu, MF_STRING, IDM_TRAY_QUIT, L"退出	Ctrl+Alt+Q");
 
     POINT pt{};
@@ -387,6 +487,29 @@ void ShowTrayMenu() {
             DestroyAllPreviews();
         }
         break;
+    case IDM_TRAY_INSTALL: {
+        const std::wstring copy = InstallToUserFolder();
+        if (copy.empty()) {
+            MessageBoxW(
+                nullptr,
+                L"装不进去。\n\n"
+                L"WindowPeeking 现在运行在低权限模式（Windows 把程序所在的目录当成沙箱，"
+                L"从这种目录里启动的程序一律降权）。低权限进程既不能写用户目录，"
+                L"也不能注册托盘图标 —— 两件事是同一个原因。\n\n"
+                L"办法：把 windowpeeking.exe 复制到桌面（或任何普通文件夹）再双击启动，"
+                L"托盘图标就正常了。仓库里的 install.cmd 双击也能做这件事。",
+                L"为什么没有托盘图标", MB_ICONINFORMATION | MB_OK);
+        } else {
+            const std::wstring text =
+                L"已经装到：\n" + copy +
+                L"\n\n桌面上也放了一个 WindowPeeking 快捷方式。"
+                L"\n从那个快捷方式启动，托盘图标就会正常出现。\n\n"
+                L"原因：这个程序放在某些目录里运行时，Windows 会把它当成低权限进程，"
+                L"而低权限进程不允许注册托盘图标。换到用户目录就没有这个限制。";
+            MessageBoxW(nullptr, text.c_str(), L"WindowPeeking", MB_ICONINFORMATION | MB_OK);
+        }
+        break;
+    }
     case IDM_TRAY_QUIT:
         PostQuitMessage(0);
         break;
@@ -1358,6 +1481,20 @@ int RunSelfTest(HINSTANCE instance) {
                   "floating button hides again when the tray comes back", hiddenDetail);
         }
 
+        // The escape hatch out of a low-integrity folder: the copy must land in
+        // %LOCALAPPDATA%\Programs\WindowPeeking, whatever separator it is given.
+        {
+            const std::wstring forward =
+                InstallTargetExe(L"C:\\Users\\someone\\AppData\\Local");
+            const std::wstring plain = InstallTargetExe(L"C:\\Users\\someone\\AppData\\Local\\");
+            char installDetail[160]{};
+            std::snprintf(installDetail, sizeof(installDetail), "\"%ls\"",
+                          forward.c_str());
+            check(forward == L"C:\\Users\\someone\\AppData\\Local\\Programs\\WindowPeeking\\windowpeeking.exe" &&
+                      forward == plain && InstallTargetExe(L"").empty(),
+                  "install target is %LOCALAPPDATA%\\Programs\\WindowPeeking", installDetail);
+        }
+
         if (g_app != nullptr) {
             DestroyWindow(g_app);
             g_app = nullptr;
@@ -1658,6 +1795,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
     }
     if (args.find(L"--selftest") != std::wstring::npos) {
         return RunSelfTest(instance);
+    }
+    if (args.find(L"--install") != std::wstring::npos) {
+        // Same job as the menu entry, without needing to see a menu: a program
+        // sitting in a folder that gets launched at low integrity can never get
+        // its tray icon, so copy it somewhere ordinary.
+        const std::wstring copy = InstallToUserFolder();
+        if (copy.empty()) {
+            PrintLine(L"install failed");
+            return 2;
+        }
+        PrintLine(copy.c_str());
+        return 0;
     }
     if (args.find(L"--demo") != std::wstring::npos) {
         return RunDemo(instance);

@@ -94,22 +94,44 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
   tray icon to switch it back off.
 - Opacity stops at 10%; below that the preview would be impossible to find again.
 - On Windows 11 the tray icon starts out folded into the "show hidden icons"
-  overflow; drag it onto the taskbar to keep it there. If Windows refuses to
-  register the icon at all (some automation sandboxes are like that), the
-  program draws its own **floating button** with the same menu.
+  overflow; drag it onto the taskbar to keep it there.
+- **Do not run the exe out of this repository folder.** Windows treats programs in it as
+  low-integrity, and a low-integrity process may not register a tray icon — double-clicking
+  `build\windowpeeking.exe` here gives you no icon. Run `install.cmd` once instead
+  (or copy the exe to the Desktop), see the next section.
 
-## No tray icon? The program draws its own
+## No tray icon?
 
 The tray is the permanent entry point, but registering an icon runs into a Windows rule:
 explorer (the taskbar) is a medium-integrity process, and a process of lower integrity that
-asks it to add an icon is simply refused (`NIM_ADD` returns error 5). Automation sandboxes,
-and anything launched by a lower-privileged parent, hit exactly this. The code is fine; the
-token is not.
+asks it to add an icon is simply refused (`NIM_ADD` returns error 5). Windows decides that
+integrity level **from the folder the exe lives in**: anything launched out of this repository
+folder is downgraded, no matter who double-clicks it.
 
-<img src="docs/fallback-button.png" width="260" alt="the floating fallback button">
+The same `whoami.exe`, started by the same medium-integrity cmd:
 
-So when registration is refused the program stops waiting and immediately paints a 44×44
-**floating button** just above the bottom-right corner of the work area:
+| Started from | Integrity | `NIM_ADD` |
+| --- | --- | --- |
+| `C:\Windows\System32\whoami.exe` | medium (0x2000) | — |
+| the same file copied into `build\` | low (0x1000) | `ok=0 err=5` refused |
+| the same file copied into `%LOCALAPPDATA%\Programs\` | medium (0x2000) | `ok=1 err=0` accepted |
+
+So there is exactly one cure: **move the exe to an ordinary folder and start it there.**
+
+```
+install.cmd            :: double-click: copies the exe to
+                       :: %LOCALAPPDATA%\Programs\WindowPeeking, adds a desktop
+                       :: shortcut, and starts it from there (tray icon works)
+```
+
+A low-integrity process cannot even create a directory in your profile
+(`CreateDirectory` returns error 5), which is why the copy has to be done by Explorer —
+that is what double-clicking `install.cmd` gives you. The program's own menu offers the same
+thing ("install to your user folder"); it only succeeds from an instance that is already fine,
+and it explains itself when it fails.
+
+If registration is still refused (system policy, security software), the program does not
+wait and paints a 44×44 **floating button** just above the bottom-right corner of the work area:
 
 | Click | What happens |
 | --- | --- |
@@ -121,6 +143,8 @@ A small green dot appears in its corner while previews are open. If the icon did
 the button never appears — you get one or the other, never both.
 
 To see it on purpose: `build\windowpeeking.exe --island`.
+
+<img src="docs/fallback-button.png" width="260" alt="the floating fallback button">
 
 The program also keeps a log, so you can tell which of the two happened:
 

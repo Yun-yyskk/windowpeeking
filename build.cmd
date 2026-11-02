@@ -30,7 +30,7 @@ if errorlevel 1 exit /b 1
 rem /utf-8 matters: the Chinese UI strings are UTF-8 source, and without it
 rem MSVC reads them as the ANSI code page and silently mangles every literal.
 set "CFLAGS=/nologo /std:c++17 /W4 /EHsc /utf-8 /DUNICODE /D_UNICODE /Fo:build\ /Fd:build\"
-set "LFLAGS=/SUBSYSTEM:WINDOWS /OUT:build\windowpeeking.exe /MANIFEST:EMBED /MANIFESTINPUT:app.manifest build\app.res user32.lib gdi32.lib dwmapi.lib shell32.lib"
+set "LFLAGS=/SUBSYSTEM:WINDOWS /OUT:build\windowpeeking.exe /MANIFEST:EMBED /MANIFESTINPUT:app.manifest build\app.res user32.lib gdi32.lib dwmapi.lib shell32.lib ole32.lib uuid.lib"
 
 if "%RELEASE%"=="1" (
     rem /MT links the CRT in, /GL + /LTCG inline across translation units,
