@@ -29,7 +29,8 @@ itself and with the tray icon:
 
 | Action | How |
 | --- | --- |
-| See more or less | Drag any edge or corner: the frame grows out over the source at 1:1, nothing is rescaled |
+| See more or less | Drag any edge or corner: the frame grows out over the source at 1:1, nothing is rescaled. The resize is **proportional** by default, so the picture never distorts |
+| Free resize | Hold **Shift** and drag an edge or corner: each axis follows its own handle, any aspect ratio goes |
 | Move on screen | Drag the body |
 | Slide the view | Hold **Shift** and drag the body: same size, same place, a different part of the source |
 | Opacity | Hold **Shift** and turn the mouse wheel (10%–100%) |
@@ -40,9 +41,12 @@ itself and with the tray icon:
 
 The preview is a **viewfinder**, not a scaled picture: whatever the frame covers
 is what you see, one source pixel per preview pixel. Drag an edge to cover more
-of the window, drag the body to move the frame across the screen, and Shift-drag
-to slide the frame over the window without moving it on screen. Edges and
-corners stop at the source window's own borders. The interface is in Chinese.
+of the window — the resize keeps the current aspect ratio, so the picture never
+distorts, and the side without a handle grows around the frame's centre; hold
+Shift to let each axis move on its own. Drag the body to move the frame across
+the screen, and Shift-drag to slide the frame over the window without moving it
+on screen. Edges and corners stop at the source window's own borders, and the
+frame never goes below 64 × 48. The interface is in Chinese.
 
 Other behaviour:
 

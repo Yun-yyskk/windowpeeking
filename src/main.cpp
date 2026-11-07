@@ -1036,7 +1036,9 @@ int RunE2ETest(HINSTANCE instance) {
     check(Near(afterRed, 255, 0, 0, 40), "live update: windowpeeking follows the source repaint", Describe(afterRed));
 
     // Dragging an edge changes what is shown instead of stretching it: the frame
-    // grows out over the source and the newly covered area arrives at 1:1.
+    // grows out over the source and the newly covered area arrives at 1:1. Shift
+    // is held so the crop is resized freely; the proportional default is covered
+    // by --selftest.
     g_srcMode = 0;                  // blue on the left, green on the right again
     InvalidateRect(source, nullptr, FALSE);
     UpdateWindow(source);
@@ -1047,8 +1049,8 @@ int RunE2ETest(HINSTANCE instance) {
     ClientToScreen(mirror.Hwnd(), &frameOrigin);
     const POINT dragTo{ frameOrigin.x - 198, frameOrigin.y + dragY };
     mirror.SetDragCursorOverride(true, dragTo);
-    SendMessageW(mirror.Hwnd(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(2, dragY));
-    SendMessageW(mirror.Hwnd(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-198, dragY));
+    SendMessageW(mirror.Hwnd(), WM_LBUTTONDOWN, MK_SHIFT | MK_LBUTTON, MAKELPARAM(2, dragY));
+    SendMessageW(mirror.Hwnd(), WM_MOUSEMOVE, MK_SHIFT | MK_LBUTTON, MAKELPARAM(-198, dragY));
     SendMessageW(mirror.Hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(-198, dragY));
     mirror.SetDragCursorOverride(false, POINT{});
     Pump(600);
@@ -1199,40 +1201,64 @@ int RunSelfTest(HINSTANCE instance) {
         struct GripCase {
             const char* label;
             int fromX, fromY, toX, toY;
+            UINT modifiers;
             RECT expected;   // relative to the 100,100 420x300 reset state
         };
+        // No Shift: the resize stays proportional. The side without a handle under
+        // the mouse grows around the crop's centre, so the frame changes in both
+        // dimensions and the picture is never distorted.
         const GripCase grips[] = {
-            { "left edge resizes from the left",       2, 150,  -8, 150,  RECT{  90, 100, 520, 400 } },
-            { "right edge resizes from the right",   417, 150, 427, 150,  RECT{ 100, 100, 530, 400 } },
-            { "top edge resizes from the top",       200,   2, 200,  -8,  RECT{ 100,  90, 520, 400 } },
-            { "bottom edge resizes from the bottom", 200, 297, 200, 307,  RECT{ 100, 100, 520, 410 } },
-            { "top-left corner",                       2,   2,  -8,  -8,  RECT{  90,  90, 520, 400 } },
-            { "top-right corner",                    417,   2, 427,  -8,  RECT{ 100,  90, 530, 400 } },
-            { "bottom-left corner",                    2, 297,  -8, 307,  RECT{  90, 100, 520, 410 } },
-            { "bottom-right corner",                 417, 297, 427, 307,  RECT{ 100, 100, 530, 410 } },
+            { "left edge, aspect-locked",             2, 150,  -8, 150, 0, RECT{  90,  97, 520, 404 } },
+            { "right edge, aspect-locked",          417, 150, 427, 150, 0, RECT{ 100,  97, 530, 404 } },
+            { "top edge, aspect-locked",            200,   2, 200,  -8, 0, RECT{  93,  90, 527, 400 } },
+            { "bottom edge, aspect-locked",         200, 297, 200, 307, 0, RECT{  93, 100, 527, 410 } },
+            { "top-left corner, aspect-locked",       2,   2,  -8,  -8, 0, RECT{  86,  90, 520, 400 } },
+            { "top-right corner, aspect-locked",    417,   2, 427,  -8, 0, RECT{ 100,  90, 534, 400 } },
+            { "bottom-left corner, aspect-locked",    2, 297,  -8, 307, 0, RECT{  86, 100, 520, 410 } },
+            { "bottom-right corner, aspect-locked", 417, 297, 427, 307, 0, RECT{ 100, 100, 534, 410 } },
         };
-        for (const GripCase& g : grips) {
+        // Shift: each axis follows its own handle again, so any shape goes.
+        const GripCase freeGrips[] = {
+            { "Shift + left edge frees the shape",      2, 150,  -8, 150, MK_SHIFT, RECT{  90, 100, 520, 400 } },
+            { "Shift + right edge frees the shape",   417, 150, 427, 150, MK_SHIFT, RECT{ 100, 100, 530, 400 } },
+            { "Shift + top edge frees the shape",     200,   2, 200,  -8, MK_SHIFT, RECT{ 100,  90, 520, 400 } },
+            { "Shift + bottom edge frees the shape",  200, 297, 200, 307, MK_SHIFT, RECT{ 100, 100, 520, 410 } },
+            { "Shift + top-left corner",                2,   2,  -8,  -8, MK_SHIFT, RECT{  90,  90, 520, 400 } },
+            { "Shift + top-right corner",             417,   2, 427,  -8, MK_SHIFT, RECT{ 100,  90, 530, 400 } },
+            { "Shift + bottom-left corner",             2, 297,  -8, 307, MK_SHIFT, RECT{  90, 100, 520, 410 } },
+            { "Shift + bottom-right corner",          417, 297, 427, 307, MK_SHIFT, RECT{ 100, 100, 530, 410 } },
+        };
+        auto runGrip = [&](const GripCase& g) {
             resetFrame();
-            dragAt(g.fromX, g.fromY, g.toX, g.toY, 0);
+            dragAt(g.fromX, g.fromY, g.toX, g.toY, g.modifiers);
             RECT got{};
             GetWindowRect(hwnd, &got);
             const RECT gripCrop = mirror.Crop();
-            char gripDetail[220]{};
+            const bool placed = (got.left == g.expected.left && got.top == g.expected.top &&
+                                 got.right == g.expected.right && got.bottom == g.expected.bottom);
+            // Whatever the shape, the frame is still the crop at 1:1.
+            const bool oneToOne = ((got.right - got.left) == (gripCrop.right - gripCrop.left) &&
+                                   (got.bottom - got.top) == (gripCrop.bottom - gripCrop.top));
+            char gripDetail[240]{};
             std::snprintf(gripDetail, sizeof(gripDetail),
                           "got (%ld,%ld,%ld,%ld) want (%ld,%ld,%ld,%ld) crop (%ld,%ld,%ld,%ld)",
                           got.left, got.top, got.right, got.bottom, g.expected.left,
                           g.expected.top, g.expected.right, g.expected.bottom,
                           gripCrop.left, gripCrop.top, gripCrop.right, gripCrop.bottom);
-            check(got.left == g.expected.left && got.top == g.expected.top &&
-                      got.right == g.expected.right && got.bottom == g.expected.bottom,
-                  g.label, gripDetail);
+            check(placed && oneToOne, g.label, gripDetail);
+        };
+        for (const GripCase& g : grips) {
+            runGrip(g);
+        }
+        for (const GripCase& g : freeGrips) {
+            runGrip(g);
         }
 
-        // An edge drag must move the crop by the same amount as the frame: the
-        // picture is never rescaled, you just see more or less of the source.
+        // Shift + edge: only the dragged axis moves, so the crop widens and the
+        // picture keeps its shape.
         {
             resetFrame();
-            dragAt(417, 150, 457, 150, 0);      // right edge, +40
+            dragAt(417, 150, 457, 150, MK_SHIFT);      // right edge, +40
             const RECT crop = mirror.Crop();
             RECT got{};
             GetWindowRect(hwnd, &got);
@@ -1240,8 +1266,62 @@ int RunSelfTest(HINSTANCE instance) {
             std::snprintf(d, sizeof(d), "crop (%ld,%ld,%ld,%ld) window %ldx%ld",
                           crop.left, crop.top, crop.right, crop.bottom,
                           got.right - got.left, got.bottom - got.top);
-            check(crop.right == 560 && crop.left == 100 && (got.right - got.left) == 460,
-                  "edge drag widens the crop, not just the window", d);
+            check(crop.right == 560 && crop.left == 100 && (got.right - got.left) == 460 &&
+                      (crop.bottom - crop.top) == 300,
+                  "Shift + edge drag widens the crop without touching the aspect", d);
+        }
+
+        // Without Shift the same drag is proportional: +40 of width forces the
+        // height up too, and the crop grows around its own centre.
+        {
+            resetFrame();
+            dragAt(417, 150, 457, 150, 0);
+            const RECT crop = mirror.Crop();
+            RECT got{};
+            GetWindowRect(hwnd, &got);
+            const long aspectW = crop.right - crop.left;
+            const long aspectH = crop.bottom - crop.top;
+            char d[220]{};
+            std::snprintf(d, sizeof(d), "crop (%ld,%ld,%ld,%ld) %ldx%ld window %ldx%ld",
+                          crop.left, crop.top, crop.right, crop.bottom, aspectW, aspectH,
+                          got.right - got.left, got.bottom - got.top);
+            // 420:300 kept as 460:329, grown 14px on each side, frame still 1:1.
+            check(crop.right == 560 && crop.left == 100 && aspectW == 460 && aspectH == 329 &&
+                      (got.right - got.left) == 460 && (got.bottom - got.top) == 329 &&
+                      got.left == 100 && got.top == 86,
+                  "no Shift, an edge drag keeps the aspect", d);
+        }
+
+        // Proportional resize stops at the minimum frame size, and its shape
+        // survives the clamp.
+        {
+            resetFrame();
+            dragAt(417, 297, -600, -600, 0);           // yank the corner far inwards
+            const RECT crop = mirror.Crop();
+            const long smallW = crop.right - crop.left;
+            const long smallH = crop.bottom - crop.top;
+            long drift = smallW * 300 - smallH * 420;
+            if (drift < 0) drift = -drift;
+            char d[200]{};
+            std::snprintf(d, sizeof(d), "crop %ldx%ld aspect drift %ld", smallW, smallH, drift);
+            check(smallW >= 64 && smallH >= 48 && drift <= 420,
+                  "proportional resize stops at the minimum size and stays proportional", d);
+        }
+
+        // ...and it cannot ask for more of the source than there is.
+        {
+            resetFrame();
+            dragAt(417, 297, 900, 900, 0);             // far past the source corner
+            const RECT crop = mirror.Crop();
+            RECT got{};
+            GetWindowRect(hwnd, &got);
+            char d[200]{};
+            std::snprintf(d, sizeof(d), "crop (%ld,%ld,%ld,%ld) window %ldx%ld",
+                          crop.left, crop.top, crop.right, crop.bottom,
+                          got.right - got.left, got.bottom - got.top);
+            check(crop.right == 590 && crop.bottom == 400 && (got.right - got.left) == 490 &&
+                      (got.bottom - got.top) == 350,
+                  "proportional resize cannot leave the source", d);
         }
 
         // A plain drag on the body moves the frame across the screen; the crop is

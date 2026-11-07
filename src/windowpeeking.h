@@ -17,7 +17,7 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.6.0"
+#define WINDOWPEEKING_VERSION L"0.7.0"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)
@@ -105,6 +105,10 @@ private:
     void ClampCropToSource();
 
     Drag m_drag = Drag::None;
+    // Edges and corners keep the crop's aspect ratio unless Shift is held, in
+    // which case each axis moves on its own. Latched from the mouse messages so
+    // the rule is testable with synthetic input instead of a physical keyboard.
+    bool m_dragFree = false;
     bool m_cursorOverride = false;
     POINT m_cursorOverridePoint{};
     POINT m_dragStartScreen{};
