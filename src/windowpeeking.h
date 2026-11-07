@@ -17,7 +17,7 @@
 #include <dwmapi.h>
 #include <string>
 
-#define WINDOWPEEKING_VERSION L"0.8.0"
+#define WINDOWPEEKING_VERSION L"0.9.0"
 
 // Posted to the existing instance to ask it to start a new pick.
 #define WM_WINDOWPEEKING_PICK (WM_APP + 1)

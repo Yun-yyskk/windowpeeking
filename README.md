@@ -31,15 +31,15 @@ itself and with the tray icon:
 
 | | No Shift | Hold Shift |
 | --- | --- | --- |
-| **Corner drag** | **Scale**: crop and frame grow or shrink together, current aspect ratio held, picture stays 1:1 | **Crop**: each axis follows its own handle, any aspect ratio goes |
+| **Corner drag** | **Zoom**: window and picture grow or shrink together, aspect ratio locked, **the crop never moves** (same region, seen bigger) | **Crop**: each axis follows its own handle, any aspect ratio goes |
 | **Edge drag** | **Crop**: only that one side moves, the other dimension is untouched | **Crop**: same as without Shift, one side only |
 | **Body drag** | **Move the window** on screen, crop untouched | **Pan the viewfinder**: the frame stays, a different part of the source is read |
 | **Wheel** | — | **Opacity** (10%–100%) |
 
 | Action | How |
 | --- | --- |
-| Scale the preview | Drag a corner (no Shift): nothing is rescaled, a bigger frame just covers more |
-| Crop the viewfinder | Drag an edge (no Shift): one side at a time, picture stays 1:1 |
+| Zoom in on the same piece | Drag a corner (no Shift): window and picture scale together, crop frozen, up to 8× |
+| Crop the viewfinder | Drag an edge (no Shift): one side at a time, and it still follows the pointer while zoomed |
 | Any aspect ratio | Hold **Shift** and drag a corner or an edge |
 | Move on screen | Drag the body without Shift |
 | Slide the view | Hold **Shift** and drag the body: same size, same place, a different part of the source |
@@ -49,19 +49,26 @@ itself and with the tray icon:
 | Another preview | Press Ctrl+Alt+P again, right-click a preview, or double-click the tray icon — previews are independent (own window, own region, own position, opacity and click-through state) |
 | Close all / quit | The tray icon (or the fallback button when Windows refuses one); its tooltip shows how many previews are open |
 
-The preview is a **viewfinder**, not a scaled picture: whatever the frame covers
-is what you see, one source pixel per preview pixel. Dragging an **edge** is
-therefore the crop tool — genuinely one more or one less strip of the source —
-while dragging a **corner** scales the whole frame with the aspect ratio held.
-Dragging the body moves the window on screen; Shift-drag slides the frame over
-the source without moving it on screen. Shift + wheel sets the opacity. Edges and
-corners stop at the source window's own borders, and the frame never goes below
-64 × 48. The interface is in Chinese.
+Two separate things. The **crop** is a rectangle in the source window's own
+coordinates: it says *what* you see. The **zoom** is preview size ÷ crop size: it
+says *how big* you see it.
+
+- Drag an **edge**, or hold **Shift** and drag a **corner**: change the crop —
+  genuinely one more or one less strip of the source, drawn at the current zoom,
+  with the grabbed edge glued to the pointer.
+- Drag a **corner** with no Shift: change the zoom — the crop does not move a
+  pixel, the window and the picture scale together, ratio locked, up to 8× and
+  never below 64 × 48.
+- Drag the **body**: move the window on screen. Shift-drag the body: the window
+  stays, a different part of the source is read.
+- **Shift + wheel**: opacity.
+
+The interface is in Chinese.
 
 Other behaviour:
 
-- The frame's size *is* the crop: resize it and you look at a bigger or smaller
-  piece of the source, never at a rescaled copy of the same piece
+- A new preview starts at 1:1: the frame covers exactly as much source as it is
+  wide at first, and only a corner drag begins to zoom
 - Stays on top of everything, never appears in the taskbar or Alt-Tab, and never
   steals keyboard focus even when it is not click-through
 - Closing the source window leaves a hint in the preview instead of a dead black
@@ -96,7 +103,7 @@ carries a tray icon. Sources are UTF-8 and are built with `/utf-8`.
 Self-tests (they create their own windows; nothing is installed):
 
 ```cmd
-build\windowpeeking.exe --selftest         :: 48 checks: borderless geometry, edges and corners as a viewfinder, Shift-slide, wheel opacity, click-through, icon, tray owner window, several previews at once, the fallback button
+build\windowpeeking.exe --selftest         :: 62 checks: borderless geometry, corner zoom, edge cropping at any zoom, Shift corner crop, Shift-slide, wheel opacity, click-through, icon, tray owner window, several previews at once, the fallback button
 build\windowpeeking.exe --selftest-picker  :: selection maths and hit testing
 build\windowpeeking.exe --selftest-e2e     :: real DWM thumbnail, verified by sampling pixels -- including that dragging an edge in brings new source pixels into view instead of stretching the old ones
 build\windowpeeking.exe --demo             :: the scene in the screenshot above, for eyeballing

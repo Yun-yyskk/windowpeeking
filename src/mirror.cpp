@@ -243,16 +243,23 @@ void Mirror::ClampCropToSource() {
 
 // THE DRAG MODEL. This is the specification; do not reinterpret it.
 //
-//   no Shift  corner drag   scale: crop and frame grow or shrink together,
-//                           aspect ratio held, picture stays 1:1
+//   no Shift  corner drag   zoom: the window and the picture grow or shrink
+//                           together, aspect held -- the framed region does not
+//                           change, you just look at it bigger or smaller
 //   no Shift  edge drag     crop: only the side under the mouse moves, the
 //                           other dimension is untouched -- the frame really
-//                           does show more or less of the source
+//                           does show more or less of the source, and the
+//                           current zoom stays
 //   no Shift  body drag     move the frame on screen, crop untouched
 //   Shift     corner drag   crop: both axes follow the mouse independently
 //   Shift     edge drag     crop: same as without Shift (one axis)
 //   Shift     body drag     crop pan: the window stays, the read area slides
 //   Shift     wheel         opacity of the frame
+//
+// One invariant ties the two: on screen the crop is drawn at whatever size the
+// window has, so winW / cropW is the current zoom factor. A zoom changes it; a
+// crop keeps it (the mouse delta is divided by it, so the edge stays under the
+// pointer).
 void Mirror::ApplyDrag(POINT screenPt) {
     if (m_drag == Drag::None || m_hwnd == nullptr) {
         return;
@@ -288,11 +295,24 @@ void Mirror::ApplyDrag(POINT screenPt) {
         return;
     }
 
+    const int winW0 = m_dragStartRect.right - m_dragStartRect.left;
+    const int winH0 = m_dragStartRect.bottom - m_dragStartRect.top;
+    if (winW0 <= 0 || winH0 <= 0) {
+        return;
+    }
+    // How many screen pixels one source pixel occupies right now.
+    const double sx = static_cast<double>(winW0) / w0;
+    const double sy = static_cast<double>(winH0) / h0;
+    // Mouse movement measured in source pixels, so a crop follows the pointer
+    // even while the frame is zoomed.
+    const int dcx = (sx > 0.001) ? static_cast<int>(std::lround(static_cast<double>(dx) / sx)) : dx;
+    const int dcy = (sy > 0.001) ? static_cast<int>(std::lround(static_cast<double>(dy) / sy)) : dy;
+
     if (m_drag == Drag::Reframe) {
         // Dragging right pulls the picture right, which brings the part of the
         // source to the LEFT of the crop into view: the crop moves the other way.
-        int x = c0.left - dx;
-        int y = c0.top - dy;
+        int x = c0.left - dcx;
+        int y = c0.top - dcy;
         int maxX = srcW - w0;
         int maxY = srcH - h0;
         if (maxX < 0) maxX = 0;
@@ -322,23 +342,62 @@ void Mirror::ApplyDrag(POINT screenPt) {
     const int dirY = (m_drag == Drag::Bottom || m_drag == Drag::BottomLeft ||
                       m_drag == Drag::BottomRight) ? 1 : -1;
 
+    if (corner && !m_dragFree) {
+        // No Shift on a corner is the zoom: the framed region stays exactly as
+        // it is, the window and the picture grow together, aspect held.
+        const double rx = static_cast<double>(winW0 + dirX * dx) / winW0;
+        const double ry = static_cast<double>(winH0 + dirY * dy) / winH0;
+        const double ratio = (std::fabs(rx - 1.0) >= std::fabs(ry - 1.0)) ? rx : ry;
+        double s = sx * ratio;
+        const double minS = std::max(static_cast<double>(kMinWidth) / w0,
+                                     static_cast<double>(kMinHeight) / h0);
+        if (s < minS) s = minS;
+        if (s > 8.0) s = 8.0;      // past 8x the source pixels are mush anyway
+        int winW = static_cast<int>(std::lround(static_cast<double>(w0) * s));
+        int winH = static_cast<int>(std::lround(static_cast<double>(h0) * s));
+        if (winW < kMinWidth) {
+            winW = kMinWidth;
+            winH = static_cast<int>(std::lround(static_cast<double>(winW) * h0 / w0));
+        }
+        if (winH < kMinHeight) {
+            winH = kMinHeight;
+            winW = static_cast<int>(std::lround(static_cast<double>(winH) * w0 / h0));
+        }
+        RECT r = m_dragStartRect;
+        if (dirX > 0) {
+            r.right = r.left + winW;
+        } else {
+            r.left = r.right - winW;
+        }
+        if (dirY > 0) {
+            r.bottom = r.top + winH;
+        } else {
+            r.top = r.bottom - winH;
+        }
+        if (r.left == m_dragStartRect.left && r.top == m_dragStartRect.top &&
+            r.right == m_dragStartRect.right && r.bottom == m_dragStartRect.bottom) {
+            return;
+        }
+        SetWindowPos(m_hwnd, HWND_TOPMOST, r.left, r.top, winW, winH, SWP_NOACTIVATE);
+        return;                    // the crop is not touched by a zoom
+    }
+
     int w = w0;
     int h = h0;
     if (corner) {
-        w = w0 + dirX * dx;
-        h = h0 + dirY * dy;
+        w = w0 + dirX * dcx;
+        h = h0 + dirY * dcy;
     } else if (horizontal) {
-        w = w0 + dirX * dx;
+        w = w0 + dirX * dcx;
     } else {
-        h = h0 + dirY * dy;
+        h = h0 + dirY * dcy;
     }
 
-    if (!corner || m_dragFree) {
-        // Shift, or an edge on its own: each axis answers only to its own
-        // handle. At a corner with Shift both dimensions follow the mouse; at
-        // an edge the far side and the other dimension are left exactly as they
-        // were -- that is the crop tool, and it is what makes the frame show
-        // more (or less) of the source at 1:1.
+    {
+        // Shift on a corner, or an edge with or without Shift: each axis answers
+        // only to its own handle. The far side and the other dimension are left
+        // exactly as they were -- that is the crop tool, and it is what makes
+        // the frame show more (or less) of the source.
         if (w < kMinWidth) w = kMinWidth;
         if (h < kMinHeight) h = kMinHeight;
         const int roomW = (dirX > 0) ? (srcW - c0.left) : c0.right;
@@ -353,57 +412,6 @@ void Mirror::ApplyDrag(POINT screenPt) {
             if (h > roomH) h = roomH;
             w = w0;
         }
-    } else {
-        // Aspect-locked. The axis the mouse moved furthest (relative to the
-        // starting size) drives the scale; the other dimension follows it.
-        double scale = 1.0;
-        if (corner) {
-            const double sx = static_cast<double>(w) / w0;
-            const double sy = static_cast<double>(h) / h0;
-            scale = (std::fabs(sx - 1.0) >= std::fabs(sy - 1.0)) ? sx : sy;
-        } else if (horizontal) {
-            scale = static_cast<double>(w) / w0;
-        } else {
-            scale = static_cast<double>(h) / h0;
-        }
-
-        // How far it may grow before leaving the source, and how far it may
-        // shrink before hitting the minimum frame size.
-        double maxScale = 0.0;
-        if (corner) {
-            const int availW = (dirX > 0) ? (srcW - c0.left) : c0.right;
-            const int availH = (dirY > 0) ? (srcH - c0.top) : c0.bottom;
-            maxScale = std::min(static_cast<double>(availW) / w0,
-                                static_cast<double>(availH) / h0);
-        } else if (horizontal) {
-            const int availW = (dirX > 0) ? (srcW - c0.left) : c0.right;
-            maxScale = std::min(static_cast<double>(availW) / w0,
-                                static_cast<double>(srcH) / h0);
-        } else {
-            const int availH = (dirY > 0) ? (srcH - c0.top) : c0.bottom;
-            maxScale = std::min(static_cast<double>(availH) / h0,
-                                static_cast<double>(srcW) / w0);
-        }
-        const double minScale = std::max(static_cast<double>(kMinWidth) / w0,
-                                         static_cast<double>(kMinHeight) / h0);
-        if (scale < minScale) scale = minScale;
-        if (scale > maxScale) scale = maxScale;
-
-        w = static_cast<int>(std::lround(static_cast<double>(w0) * scale));
-        if (w < 1) w = 1;
-        h = static_cast<int>(std::lround(static_cast<double>(w) * h0 / w0));
-        if (h < 1) h = 1;
-        // Rounding must not sneak past the limits.
-        if (w < kMinWidth) {
-            w = kMinWidth;
-            h = static_cast<int>(std::lround(static_cast<double>(w) * h0 / w0));
-        }
-        if (h < kMinHeight) {
-            h = kMinHeight;
-            w = static_cast<int>(std::lround(static_cast<double>(h) * w0 / h0));
-        }
-        if (w > srcW) w = srcW;
-        if (h > srcH) h = srcH;
     }
 
     RECT c = c0;
@@ -474,14 +482,43 @@ void Mirror::ApplyDrag(POINT screenPt) {
         return;
     }
 
-    // The frame is the crop at 1:1, so it moves with the crop's top-left corner
-    // and takes the crop's size. Growing the crop rightwards therefore keeps the
-    // frame's left edge still, exactly like growing it leftwards keeps the right.
+    // The crop keeps the current zoom, so the window's size follows it, and the
+    // side you are NOT holding stays exactly where it is on screen. That is what
+    // keeps the grabbed edge under the pointer: the crop moved by d source
+    // pixels, the window's edge moves by d * zoom -- the same d the mouse moved.
+    const int winW = (w > 0) ? static_cast<int>(std::lround(static_cast<double>(w) * sx)) : winW0;
+    const int winH = (h > 0) ? static_cast<int>(std::lround(static_cast<double>(h) * sy)) : winH0;
     RECT r = m_dragStartRect;
-    r.left += (c.left - c0.left);
-    r.top += (c.top - c0.top);
-    r.right = r.left + (c.right - c.left);
-    r.bottom = r.top + (c.bottom - c.top);
+    if (corner) {
+        if (dirX > 0) {
+            r.right = r.left + winW;
+        } else {
+            r.left = r.right - winW;
+        }
+        if (dirY > 0) {
+            r.bottom = r.top + winH;
+        } else {
+            r.top = r.bottom - winH;
+        }
+    } else if (horizontal) {
+        if (dirX > 0) {
+            r.right = r.left + winW;
+        } else {
+            r.left = r.right - winW;
+        }
+        const int midY = (m_dragStartRect.top + m_dragStartRect.bottom) / 2;
+        r.top = midY - winH / 2;
+        r.bottom = r.top + winH;
+    } else {
+        if (dirY > 0) {
+            r.bottom = r.top + winH;
+        } else {
+            r.top = r.bottom - winH;
+        }
+        const int midX = (m_dragStartRect.left + m_dragStartRect.right) / 2;
+        r.left = midX - winW / 2;
+        r.right = r.left + winW;
+    }
 
     m_crop = c;
     SetWindowPos(m_hwnd, HWND_TOPMOST, r.left, r.top, r.right - r.left,

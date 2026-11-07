@@ -1277,31 +1277,49 @@ int RunSelfTest(HINSTANCE instance) {
             const char* label;
             int fromX, fromY, toX, toY;
             UINT modifiers;
-            RECT expected;   // relative to the 100,100 420x300 reset state
+            RECT expected;       // window, relative to the 100,100 420x300 reset
+            RECT expectedCrop;   // the framed region in the source
         };
         // No Shift, and this is the semantics that must not drift again:
-        //   corner -> scale   (crop and frame grow together, aspect held)
+        //   corner -> zoom    (window and picture scale, the crop does not move)
         //   edge   -> crop    (one side moves, the other dimension untouched)
+        const RECT kStillCrop{ 100, 50, 520, 350 };   // == kBaseCrop, untouched
         const GripCase grips[] = {
-            { "left edge, crop: only the width changes",   2, 150,  -8, 150, 0, RECT{  90, 100, 520, 400 } },
-            { "right edge, crop: only the width changes", 417, 150, 427, 150, 0, RECT{ 100, 100, 530, 400 } },
-            { "top edge, crop: only the height changes",  200,   2, 200,  -8, 0, RECT{ 100,  90, 520, 400 } },
-            { "bottom edge, crop: only the height changes", 200, 297, 200, 307, 0, RECT{ 100, 100, 520, 410 } },
-            { "top-left corner, scale: aspect held",        2,   2,  -8,  -8, 0, RECT{  86,  90, 520, 400 } },
-            { "top-right corner, scale: aspect held",     417,   2, 427,  -8, 0, RECT{ 100,  90, 534, 400 } },
-            { "bottom-left corner, scale: aspect held",     2, 297,  -8, 307, 0, RECT{  86, 100, 520, 410 } },
-            { "bottom-right corner, scale: aspect held",  417, 297, 427, 307, 0, RECT{ 100, 100, 534, 410 } },
+            { "left edge, crop: only the width changes",   2, 150,  -8, 150, 0,
+              RECT{  90, 100, 520, 400 }, RECT{  90, 50, 520, 350 } },
+            { "right edge, crop: only the width changes", 417, 150, 427, 150, 0,
+              RECT{ 100, 100, 530, 400 }, RECT{ 100, 50, 530, 350 } },
+            { "top edge, crop: only the height changes",  200,   2, 200,  -8, 0,
+              RECT{ 100,  90, 520, 400 }, RECT{ 100, 40, 520, 350 } },
+            { "bottom edge, crop: only the height changes", 200, 297, 200, 307, 0,
+              RECT{ 100, 100, 520, 410 }, RECT{ 100, 50, 520, 360 } },
+            { "top-left corner, zoom: the crop stays",      2,   2,  -8,  -8, 0,
+              RECT{  86,  90, 520, 400 }, kStillCrop },
+            { "top-right corner, zoom: the crop stays",   417,   2, 427,  -8, 0,
+              RECT{ 100,  90, 534, 400 }, kStillCrop },
+            { "bottom-left corner, zoom: the crop stays",   2, 297,  -8, 307, 0,
+              RECT{  86, 100, 520, 410 }, kStillCrop },
+            { "bottom-right corner, zoom: the crop stays", 417, 297, 427, 307, 0,
+              RECT{ 100, 100, 534, 410 }, kStillCrop },
         };
         // Shift: each axis follows its own handle again, so any shape goes.
         const GripCase freeGrips[] = {
-            { "Shift + left edge frees the shape",      2, 150,  -8, 150, MK_SHIFT, RECT{  90, 100, 520, 400 } },
-            { "Shift + right edge frees the shape",   417, 150, 427, 150, MK_SHIFT, RECT{ 100, 100, 530, 400 } },
-            { "Shift + top edge frees the shape",     200,   2, 200,  -8, MK_SHIFT, RECT{ 100,  90, 520, 400 } },
-            { "Shift + bottom edge frees the shape",  200, 297, 200, 307, MK_SHIFT, RECT{ 100, 100, 520, 410 } },
-            { "Shift + top-left corner",                2,   2,  -8,  -8, MK_SHIFT, RECT{  90,  90, 520, 400 } },
-            { "Shift + top-right corner",             417,   2, 427,  -8, MK_SHIFT, RECT{ 100,  90, 530, 400 } },
-            { "Shift + bottom-left corner",             2, 297,  -8, 307, MK_SHIFT, RECT{  90, 100, 520, 410 } },
-            { "Shift + bottom-right corner",          417, 297, 427, 307, MK_SHIFT, RECT{ 100, 100, 530, 410 } },
+            { "Shift + left edge frees the shape",      2, 150,  -8, 150, MK_SHIFT,
+              RECT{  90, 100, 520, 400 }, RECT{  90, 50, 520, 350 } },
+            { "Shift + right edge frees the shape",   417, 150, 427, 150, MK_SHIFT,
+              RECT{ 100, 100, 530, 400 }, RECT{ 100, 50, 530, 350 } },
+            { "Shift + top edge frees the shape",     200,   2, 200,  -8, MK_SHIFT,
+              RECT{ 100,  90, 520, 400 }, RECT{ 100, 40, 520, 350 } },
+            { "Shift + bottom edge frees the shape",  200, 297, 200, 307, MK_SHIFT,
+              RECT{ 100, 100, 520, 410 }, RECT{ 100, 50, 520, 360 } },
+            { "Shift + top-left corner",                2,   2,  -8,  -8, MK_SHIFT,
+              RECT{  90,  90, 520, 400 }, RECT{  90, 40, 520, 350 } },
+            { "Shift + top-right corner",             417,   2, 427,  -8, MK_SHIFT,
+              RECT{ 100,  90, 530, 400 }, RECT{ 100, 40, 530, 350 } },
+            { "Shift + bottom-left corner",             2, 297,  -8, 307, MK_SHIFT,
+              RECT{  90, 100, 520, 410 }, RECT{  90, 50, 520, 360 } },
+            { "Shift + bottom-right corner",          417, 297, 427, 307, MK_SHIFT,
+              RECT{ 100, 100, 530, 410 }, RECT{ 100, 50, 530, 360 } },
         };
         auto runGrip = [&](const GripCase& g) {
             resetFrame();
@@ -1311,16 +1329,29 @@ int RunSelfTest(HINSTANCE instance) {
             const RECT gripCrop = mirror.Crop();
             const bool placed = (got.left == g.expected.left && got.top == g.expected.top &&
                                  got.right == g.expected.right && got.bottom == g.expected.bottom);
-            // Whatever the shape, the frame is still the crop at 1:1.
-            const bool oneToOne = ((got.right - got.left) == (gripCrop.right - gripCrop.left) &&
-                                   (got.bottom - got.top) == (gripCrop.bottom - gripCrop.top));
-            char gripDetail[240]{};
+            const bool framed = (gripCrop.left == g.expectedCrop.left &&
+                                 gripCrop.top == g.expectedCrop.top &&
+                                 gripCrop.right == g.expectedCrop.right &&
+                                 gripCrop.bottom == g.expectedCrop.bottom);
+            // The picture is the crop drawn at the window's size, so the two must
+            // keep the same shape or the mirror would letterbox itself.
+            const long winW = got.right - got.left;
+            const long winH = got.bottom - got.top;
+            const long cropW = gripCrop.right - gripCrop.left;
+            const long cropH = gripCrop.bottom - gripCrop.top;
+            long skew = winW * cropH - winH * cropW;
+            if (skew < 0) skew = -skew;
+            const bool shapeHeld = skew <= (cropW > cropH ? cropW : cropH);
+            char gripDetail[300]{};
             std::snprintf(gripDetail, sizeof(gripDetail),
-                          "got (%ld,%ld,%ld,%ld) want (%ld,%ld,%ld,%ld) crop (%ld,%ld,%ld,%ld)",
+                          "got (%ld,%ld,%ld,%ld) want (%ld,%ld,%ld,%ld) "
+                          "crop (%ld,%ld,%ld,%ld) want (%ld,%ld,%ld,%ld) skew %ld",
                           got.left, got.top, got.right, got.bottom, g.expected.left,
                           g.expected.top, g.expected.right, g.expected.bottom,
-                          gripCrop.left, gripCrop.top, gripCrop.right, gripCrop.bottom);
-            check(placed && oneToOne, g.label, gripDetail);
+                          gripCrop.left, gripCrop.top, gripCrop.right, gripCrop.bottom,
+                          g.expectedCrop.left, g.expectedCrop.top, g.expectedCrop.right,
+                          g.expectedCrop.bottom, skew);
+            check(placed && framed && shapeHeld, g.label, gripDetail);
         };
         for (const GripCase& g : grips) {
             runGrip(g);
@@ -1366,36 +1397,68 @@ int RunSelfTest(HINSTANCE instance) {
                   "no Shift, an edge drag is a crop: height untouched, origin held", d);
         }
 
-        // Proportional resize stops at the minimum frame size, and its shape
-        // survives the clamp.
+        // Zooming stops at the minimum frame size, and the framed region is not
+        // touched by any of it -- that is the whole point of a zoom.
         {
             resetFrame();
             dragAt(417, 297, -600, -600, 0);           // yank the corner far inwards
-            const RECT crop = mirror.Crop();
-            const long smallW = crop.right - crop.left;
-            const long smallH = crop.bottom - crop.top;
-            long drift = smallW * 300 - smallH * 420;
-            if (drift < 0) drift = -drift;
-            char d[200]{};
-            std::snprintf(d, sizeof(d), "crop %ldx%ld aspect drift %ld", smallW, smallH, drift);
-            check(smallW >= 64 && smallH >= 48 && drift <= 420,
-                  "proportional resize stops at the minimum size and stays proportional", d);
-        }
-
-        // ...and it cannot ask for more of the source than there is.
-        {
-            resetFrame();
-            dragAt(417, 297, 900, 900, 0);             // far past the source corner
-            const RECT crop = mirror.Crop();
             RECT got{};
             GetWindowRect(hwnd, &got);
-            char d[200]{};
-            std::snprintf(d, sizeof(d), "crop (%ld,%ld,%ld,%ld) window %ldx%ld",
-                          crop.left, crop.top, crop.right, crop.bottom,
+            const RECT crop = mirror.Crop();
+            const long winW = got.right - got.left;
+            const long winH = got.bottom - got.top;
+            long drift = winW * 300 - winH * 420;
+            if (drift < 0) drift = -drift;
+            char d[240]{};
+            std::snprintf(d, sizeof(d), "window %ldx%ld at (%ld,%ld) crop (%ld,%ld,%ld,%ld) drift %ld",
+                          winW, winH, got.left, got.top, crop.left, crop.top, crop.right,
+                          crop.bottom, drift);
+            check(winW >= 64 && winH >= 48 && drift <= 420 && crop.left == 100 &&
+                      crop.top == 50 && crop.right == 520 && crop.bottom == 350,
+                  "zoom stops at the minimum size, leaving the crop alone", d);
+        }
+
+        // ...and it caps its own magnification instead of chasing the cursor.
+        {
+            resetFrame();
+            dragAt(417, 297, 5000, 5000, 0);           // far past anything sane
+            RECT got{};
+            GetWindowRect(hwnd, &got);
+            const RECT crop = mirror.Crop();
+            const long winW = got.right - got.left;
+            const long winH = got.bottom - got.top;
+            long drift = winW * 300 - winH * 420;
+            if (drift < 0) drift = -drift;
+            char d[240]{};
+            std::snprintf(d, sizeof(d), "window %ldx%ld crop (%ld,%ld,%ld,%ld) drift %ld",
+                          winW, winH, crop.left, crop.top, crop.right, crop.bottom, drift);
+            check(winW == 3360 && winH == 2400 && drift <= 420 && crop.right == 520 &&
+                      crop.bottom == 350,
+                  "zoom caps at 8x and never leaves the framed region", d);
+        }
+
+        // A zoomed frame stays zoomed when an edge is then used to crop: the
+        // pointer keeps the edge, so +40 screen pixels is +30 source pixels.
+        {
+            resetFrame();
+            dragAt(417, 297, 500, 400, 0);             // zoom by 403/300
+            RECT zoomed{};
+            GetWindowRect(hwnd, &zoomed);
+            const long zoomW = zoomed.right - zoomed.left;
+            const long zoomH = zoomed.bottom - zoomed.top;
+            dragAt(static_cast<int>(zoomW) - 4, 200, static_cast<int>(zoomW) + 36, 200, 0);
+            RECT got{};
+            GetWindowRect(hwnd, &got);
+            const RECT crop = mirror.Crop();
+            char d[260]{};
+            std::snprintf(d, sizeof(d), "zoom %ldx%ld then crop (%ld,%ld,%ld,%ld) window %ldx%ld",
+                          zoomW, zoomH, crop.left, crop.top, crop.right, crop.bottom,
                           got.right - got.left, got.bottom - got.top);
-            check(crop.right == 590 && crop.bottom == 400 && (got.right - got.left) == 490 &&
-                      (got.bottom - got.top) == 350,
-                  "proportional resize cannot leave the source", d);
+            check(zoomW == 564 && zoomH == 403 && crop.right == 550 && crop.left == 100 &&
+                      (crop.bottom - crop.top) == 300 &&
+                      (got.right - got.left) >= 603 && (got.right - got.left) <= 606 &&
+                      (got.bottom - got.top) == 403,
+                  "a crop on a zoomed frame keeps the zoom and follows the pointer", d);
         }
 
         // A plain drag on the body moves the frame across the screen; the crop is

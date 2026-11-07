@@ -4,7 +4,7 @@
 # so this last step is done by hand. It reuses the GitHub credential git already
 # has stored (no token is written anywhere), creates the release for the tag and
 # attaches the built exe plus install.cmd. Safe to run twice.
-param([string]$Tag = "v0.8.0")
+param([string]$Tag = "v0.9.0")
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
