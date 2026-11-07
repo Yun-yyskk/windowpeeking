@@ -27,11 +27,21 @@ Ctrl+Alt+Q   close every preview and quit
 Once a preview exists, everything else is done with the mouse on the preview
 itself and with the tray icon:
 
+**Drag semantics (this is the specification — do not reinterpret it):**
+
+| | No Shift | Hold Shift |
+| --- | --- | --- |
+| **Corner drag** | **Scale**: crop and frame grow or shrink together, current aspect ratio held, picture stays 1:1 | **Crop**: each axis follows its own handle, any aspect ratio goes |
+| **Edge drag** | **Crop**: only that one side moves, the other dimension is untouched | **Crop**: same as without Shift, one side only |
+| **Body drag** | **Move the window** on screen, crop untouched | **Pan the viewfinder**: the frame stays, a different part of the source is read |
+| **Wheel** | — | **Opacity** (10%–100%) |
+
 | Action | How |
 | --- | --- |
-| See more or less | Drag any edge or corner: the frame grows out over the source at 1:1, nothing is rescaled. The resize is **proportional** by default, so the picture never distorts |
-| Free resize | Hold **Shift** and drag an edge or corner: each axis follows its own handle, any aspect ratio goes |
-| Move on screen | Drag the body |
+| Scale the preview | Drag a corner (no Shift): nothing is rescaled, a bigger frame just covers more |
+| Crop the viewfinder | Drag an edge (no Shift): one side at a time, picture stays 1:1 |
+| Any aspect ratio | Hold **Shift** and drag a corner or an edge |
+| Move on screen | Drag the body without Shift |
 | Slide the view | Hold **Shift** and drag the body: same size, same place, a different part of the source |
 | Opacity | Hold **Shift** and turn the mouse wheel (10%–100%) |
 | Menu | Right-click: new preview, opacity presets, click-through, close this preview, close all, quit |
@@ -40,13 +50,13 @@ itself and with the tray icon:
 | Close all / quit | The tray icon (or the fallback button when Windows refuses one); its tooltip shows how many previews are open |
 
 The preview is a **viewfinder**, not a scaled picture: whatever the frame covers
-is what you see, one source pixel per preview pixel. Drag an edge to cover more
-of the window — the resize keeps the current aspect ratio, so the picture never
-distorts, and the side without a handle grows around the frame's centre; hold
-Shift to let each axis move on its own. Drag the body to move the frame across
-the screen, and Shift-drag to slide the frame over the window without moving it
-on screen. Edges and corners stop at the source window's own borders, and the
-frame never goes below 64 × 48. The interface is in Chinese.
+is what you see, one source pixel per preview pixel. Dragging an **edge** is
+therefore the crop tool — genuinely one more or one less strip of the source —
+while dragging a **corner** scales the whole frame with the aspect ratio held.
+Dragging the body moves the window on screen; Shift-drag slides the frame over
+the source without moving it on screen. Shift + wheel sets the opacity. Edges and
+corners stop at the source window's own borders, and the frame never goes below
+64 × 48. The interface is in Chinese.
 
 Other behaviour:
 
@@ -105,10 +115,13 @@ build\windowpeeking.exe --demo             :: the scene in the screenshot above,
 - Opacity stops at 10%; below that the preview would be impossible to find again.
 - On Windows 11 the tray icon starts out folded into the "show hidden icons"
   overflow; drag it onto the taskbar to keep it there.
-- **Do not run the exe out of this repository folder.** Windows treats programs in it as
-  low-integrity, and a low-integrity process may not register a tray icon — double-clicking
-  `build\windowpeeking.exe` here gives you no icon. Run `install.cmd` once instead
-  (or copy the exe to the Desktop), see the next section.
+- **Started from a de-privileged folder (this repository included), the tray icon is refused
+  and the program cannot rescue itself**: a low-integrity process cannot create anything in
+  your profile (`CreateDirectory` returns 5) and cannot start a higher-integrity child either
+  (measured: the handed-over copy stays low and stays tray-less). The cure has to come from
+  outside — double-click `install.cmd` or the desktop shortcut and run the copy under
+  `%LOCALAPPDATA%\Programs\WindowPeeking`. `--relocated` only stops the program from
+  re-launching itself (the self tests use it). See the next section.
 
 ## No tray icon?
 
@@ -126,7 +139,9 @@ The same `whoami.exe`, started by the same medium-integrity cmd:
 | the same file copied into `build\` | low (0x1000) | `ok=0 err=5` refused |
 | the same file copied into `%LOCALAPPDATA%\Programs\` | medium (0x2000) | `ok=1 err=0` accepted |
 
-So there is exactly one cure: **move the exe to an ordinary folder and start it there.**
+So there is exactly one cure, and it has to come from **outside**: **move the exe to an
+ordinary folder and start it there.** A low-integrity process cannot do that for itself — it
+cannot create the directory, and any child it starts inherits the low integrity level.
 
 ```
 install.cmd            :: double-click: copies the exe to
@@ -134,11 +149,12 @@ install.cmd            :: double-click: copies the exe to
                        :: shortcut, and starts it from there (tray icon works)
 ```
 
-A low-integrity process cannot even create a directory in your profile
-(`CreateDirectory` returns error 5), which is why the copy has to be done by Explorer —
-that is what double-clicking `install.cmd` gives you. The program's own menu offers the same
-thing ("install to your user folder"); it only succeeds from an instance that is already fine,
-and it explains itself when it fails.
+Explorer is what makes the difference: double-clicking `install.cmd` runs `cmd.exe` (a
+System32 binary, so medium integrity) and that process does have the rights to copy into your
+profile. Started from a folder it is allowed to write, a refused tray also makes the program
+copy itself there and hand over (`relocate: ...` in the log), and the menu offers the same
+thing as "install to your user folder" — but from a de-privileged folder that path is closed,
+which is exactly why the shortcut matters.
 
 If registration is still refused (system policy, security software), the program does not
 wait and paints a 44×44 **floating button** just above the bottom-right corner of the work area:

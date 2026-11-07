@@ -115,6 +115,11 @@ HICON LoadAppIcon() {
 // shell that is still starting.
 DWORD g_trayError = 0;
 
+// Set once the tray has been refused for good because this process sits below
+// the taskbar's integrity level. It is the signal that starting over from an
+// ordinary folder is the only thing left to try.
+bool g_trayRefusedAccess = false;
+
 bool AddTrayIcon() {
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(nid);
@@ -272,6 +277,7 @@ void EnsureTrayIcon() {
         // No amount of retrying gets past this one: the shell is a more
         // privileged process, and Windows refuses to carry our icon request to it.
         TrayLog("access denied: this process is not allowed to reach the taskbar");
+        g_trayRefusedAccess = true;
         KillTimer(g_app, kTrayRetryTimer);
         ShowIsland();
         return;
@@ -308,6 +314,14 @@ std::wstring InstallTargetExe(const std::wstring& localAppData) {
         dir += L'\\';
     }
     return dir + L"Programs\\WindowPeeking\\windowpeeking.exe";
+}
+
+// Is this executable already the installed copy? Pure, so the self test can
+// answer it for made-up paths; a process that is already there must not try to
+// install itself again (that is how a relocation loop would start).
+bool IsInstallTarget(const std::wstring& self, const std::wstring& localAppData) {
+    const std::wstring target = InstallTargetExe(localAppData);
+    return !target.empty() && !self.empty() && _wcsicmp(self.c_str(), target.c_str()) == 0;
 }
 
 std::wstring EnvFolder(const wchar_t* name) {
@@ -378,6 +392,67 @@ std::wstring InstallToUserFolder() {
     }
     TrayLog("install: copied to %ls", target.c_str());
     return target;
+}
+
+std::wstring SelfExePath() {
+    wchar_t self[MAX_PATH] = {};
+    return GetModuleFileNameW(nullptr, self, MAX_PATH) > 0 ? std::wstring(self) : std::wstring();
+}
+
+// Start the installed copy and step out of its way.
+//
+// The copy is created suspended so the single-instance mutex can be let go
+// before it runs its first instruction: otherwise it would see a live instance,
+// hand its request to a process that is already leaving, and nothing would
+// start. Returns false when the copy could not be created, in which case this
+// process should carry on and let the floating button do the job.
+bool SpawnRelocatedCopy(const std::wstring& exePath, HANDLE& mutex) {
+    std::wstring command = L"\"" + exePath + L"\" --relocated";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (CreateProcessW(exePath.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED,
+                       nullptr, nullptr, &startup, &child) == FALSE) {
+        TrayLog("relocate: CreateProcessW failed err=%lu", GetLastError());
+        return false;
+    }
+    if (mutex != nullptr) {
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        mutex = nullptr;
+    }
+    ResumeThread(child.hThread);
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    TrayLog("relocate: handed over to %ls", exePath.c_str());
+    return true;
+}
+
+// The copy could not be made: a process this quiet cannot write into the
+// profile at all. The installed copy may still be there from an earlier run,
+// and Explorer -- which is medium integrity and can write -- starts it at its
+// own level, so ask the shell to start it instead of doing it ourselves.
+bool HandOverToInstalledCopy(HANDLE& mutex) {
+    const std::wstring target = InstallTargetExe(LocalAppDataFolder());
+    if (target.empty() || GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (mutex != nullptr) {
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        mutex = nullptr;
+    }
+    // Nothing of ours may answer the copy's "is anyone already here?" question.
+    RemoveTrayIcon();
+    if (g_app != nullptr) {
+        DestroyWindow(g_app);
+        g_app = nullptr;
+    }
+    const HINSTANCE result =
+        ShellExecuteW(nullptr, L"open", target.c_str(), L"--relocated", nullptr, SW_SHOWNORMAL);
+    const bool started = reinterpret_cast<INT_PTR>(result) > 32;
+    TrayLog("relocate: asked the shell for %ls started=%d", target.c_str(), started ? 1 : 0);
+    return started;
 }
 
 wp::Mirror* FindPreview(HWND hwnd) {
@@ -1204,18 +1279,18 @@ int RunSelfTest(HINSTANCE instance) {
             UINT modifiers;
             RECT expected;   // relative to the 100,100 420x300 reset state
         };
-        // No Shift: the resize stays proportional. The side without a handle under
-        // the mouse grows around the crop's centre, so the frame changes in both
-        // dimensions and the picture is never distorted.
+        // No Shift, and this is the semantics that must not drift again:
+        //   corner -> scale   (crop and frame grow together, aspect held)
+        //   edge   -> crop    (one side moves, the other dimension untouched)
         const GripCase grips[] = {
-            { "left edge, aspect-locked",             2, 150,  -8, 150, 0, RECT{  90,  97, 520, 404 } },
-            { "right edge, aspect-locked",          417, 150, 427, 150, 0, RECT{ 100,  97, 530, 404 } },
-            { "top edge, aspect-locked",            200,   2, 200,  -8, 0, RECT{  93,  90, 527, 400 } },
-            { "bottom edge, aspect-locked",         200, 297, 200, 307, 0, RECT{  93, 100, 527, 410 } },
-            { "top-left corner, aspect-locked",       2,   2,  -8,  -8, 0, RECT{  86,  90, 520, 400 } },
-            { "top-right corner, aspect-locked",    417,   2, 427,  -8, 0, RECT{ 100,  90, 534, 400 } },
-            { "bottom-left corner, aspect-locked",    2, 297,  -8, 307, 0, RECT{  86, 100, 520, 410 } },
-            { "bottom-right corner, aspect-locked", 417, 297, 427, 307, 0, RECT{ 100, 100, 534, 410 } },
+            { "left edge, crop: only the width changes",   2, 150,  -8, 150, 0, RECT{  90, 100, 520, 400 } },
+            { "right edge, crop: only the width changes", 417, 150, 427, 150, 0, RECT{ 100, 100, 530, 400 } },
+            { "top edge, crop: only the height changes",  200,   2, 200,  -8, 0, RECT{ 100,  90, 520, 400 } },
+            { "bottom edge, crop: only the height changes", 200, 297, 200, 307, 0, RECT{ 100, 100, 520, 410 } },
+            { "top-left corner, scale: aspect held",        2,   2,  -8,  -8, 0, RECT{  86,  90, 520, 400 } },
+            { "top-right corner, scale: aspect held",     417,   2, 427,  -8, 0, RECT{ 100,  90, 534, 400 } },
+            { "bottom-left corner, scale: aspect held",     2, 297,  -8, 307, 0, RECT{  86, 100, 520, 410 } },
+            { "bottom-right corner, scale: aspect held",  417, 297, 427, 307, 0, RECT{ 100, 100, 534, 410 } },
         };
         // Shift: each axis follows its own handle again, so any shape goes.
         const GripCase freeGrips[] = {
@@ -1271,25 +1346,24 @@ int RunSelfTest(HINSTANCE instance) {
                   "Shift + edge drag widens the crop without touching the aspect", d);
         }
 
-        // Without Shift the same drag is proportional: +40 of width forces the
-        // height up too, and the crop grows around its own centre.
+        // Without Shift the same drag is the crop tool: +40 of width and nothing
+        // else -- the height is exactly what it was, the frame stays put.
         {
             resetFrame();
             dragAt(417, 150, 457, 150, 0);
             const RECT crop = mirror.Crop();
             RECT got{};
             GetWindowRect(hwnd, &got);
-            const long aspectW = crop.right - crop.left;
-            const long aspectH = crop.bottom - crop.top;
+            const long cropW = crop.right - crop.left;
+            const long cropH = crop.bottom - crop.top;
             char d[220]{};
             std::snprintf(d, sizeof(d), "crop (%ld,%ld,%ld,%ld) %ldx%ld window %ldx%ld",
-                          crop.left, crop.top, crop.right, crop.bottom, aspectW, aspectH,
+                          crop.left, crop.top, crop.right, crop.bottom, cropW, cropH,
                           got.right - got.left, got.bottom - got.top);
-            // 420:300 kept as 460:329, grown 14px on each side, frame still 1:1.
-            check(crop.right == 560 && crop.left == 100 && aspectW == 460 && aspectH == 329 &&
-                      (got.right - got.left) == 460 && (got.bottom - got.top) == 329 &&
-                      got.left == 100 && got.top == 86,
-                  "no Shift, an edge drag keeps the aspect", d);
+            check(crop.right == 560 && crop.left == 100 && cropW == 460 && cropH == 300 &&
+                      (got.right - got.left) == 460 && (got.bottom - got.top) == 300 &&
+                      got.left == 100 && got.top == 100,
+                  "no Shift, an edge drag is a crop: height untouched, origin held", d);
         }
 
         // Proportional resize stops at the minimum frame size, and its shape
@@ -1573,6 +1647,24 @@ int RunSelfTest(HINSTANCE instance) {
             check(forward == L"C:\\Users\\someone\\AppData\\Local\\Programs\\WindowPeeking\\windowpeeking.exe" &&
                       forward == plain && InstallTargetExe(L"").empty(),
                   "install target is %LOCALAPPDATA%\\Programs\\WindowPeeking", installDetail);
+        }
+
+        // Handing over to the installed copy must happen exactly once: a copy
+        // that is already the target has to recognise itself, or the program
+        // would relaunch itself forever from a folder it can never leave.
+        {
+            const std::wstring local = L"C:\\Users\\someone\\AppData\\Local";
+            const std::wstring target = InstallTargetExe(local);
+            std::wstring shouted = target;
+            for (wchar_t& c : shouted) {
+                c = static_cast<wchar_t>(towupper(c));
+            }
+            const bool self = IsInstallTarget(target, local) && IsInstallTarget(shouted, local);
+            const bool other = !IsInstallTarget(L"D:\\build\\windowpeeking.exe", local) &&
+                               !IsInstallTarget(target, L"") && !IsInstallTarget(L"", local);
+            check(self && other,
+                  "only the installed copy counts as already installed (no relaunch loop)",
+                  self ? "target matches, case-insensitively" : "target did not match itself");
         }
 
         if (g_app != nullptr) {
@@ -1907,6 +1999,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR cmdLine, int) {
         return 1;
     }
     EnsureTrayIcon();
+    if (g_trayRefusedAccess && args.find(L"--relocated") == std::wstring::npos &&
+        !IsInstallTarget(SelfExePath(), LocalAppDataFolder())) {
+        // The folder this exe sits in made Windows start it too quietly to own a
+        // tray icon, and that follows the file, not this run. Copy it somewhere
+        // ordinary and let the copy take over, so "double-click it anywhere"
+        // keeps working instead of silently degrading to the corner button.
+        const std::wstring copy = InstallToUserFolder();
+        if (!copy.empty() && SpawnRelocatedCopy(copy, mutex)) {
+            return 0;
+        }
+        // A process that could not even write the copy (low integrity cannot
+        // write the profile) still has the installed one to fall back on.
+        if (HandOverToInstalledCopy(mutex)) {
+            return 0;
+        }
+        TrayLog("relocate: staying put; the floating button still works");
+    }
     if (args.find(L"--island") != std::wstring::npos) {
         // Force the fallback face even where the tray works, which is what the
         // screenshot and the "is it really there?" question need.

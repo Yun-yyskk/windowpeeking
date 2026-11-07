@@ -241,12 +241,18 @@ void Mirror::ClampCropToSource() {
     UpdateThumb();
 }
 
-// The drag model, with the frame understood as a window onto the source:
-//   edges and corners  resize the crop. By default the resize keeps the crop's
-//                      current aspect ratio (the picture never distorts); hold
-//                      Shift for a free resize where each axis moves alone.
-//   body drag          moves the frame on screen, crop untouched
-//   Shift + body drag  slides the crop over the source, frame untouched
+// THE DRAG MODEL. This is the specification; do not reinterpret it.
+//
+//   no Shift  corner drag   scale: crop and frame grow or shrink together,
+//                           aspect ratio held, picture stays 1:1
+//   no Shift  edge drag     crop: only the side under the mouse moves, the
+//                           other dimension is untouched -- the frame really
+//                           does show more or less of the source
+//   no Shift  body drag     move the frame on screen, crop untouched
+//   Shift     corner drag   crop: both axes follow the mouse independently
+//   Shift     edge drag     crop: same as without Shift (one axis)
+//   Shift     body drag     crop pan: the window stays, the read area slides
+//   Shift     wheel         opacity of the frame
 void Mirror::ApplyDrag(POINT screenPt) {
     if (m_drag == Drag::None || m_hwnd == nullptr) {
         return;
@@ -327,10 +333,26 @@ void Mirror::ApplyDrag(POINT screenPt) {
         h = h0 + dirY * dy;
     }
 
-    if (m_dragFree) {
-        // Shift: the two axes are independent, so the crop can take any shape.
+    if (!corner || m_dragFree) {
+        // Shift, or an edge on its own: each axis answers only to its own
+        // handle. At a corner with Shift both dimensions follow the mouse; at
+        // an edge the far side and the other dimension are left exactly as they
+        // were -- that is the crop tool, and it is what makes the frame show
+        // more (or less) of the source at 1:1.
         if (w < kMinWidth) w = kMinWidth;
         if (h < kMinHeight) h = kMinHeight;
+        const int roomW = (dirX > 0) ? (srcW - c0.left) : c0.right;
+        const int roomH = (dirY > 0) ? (srcH - c0.top) : c0.bottom;
+        if (corner) {
+            if (w > roomW) w = roomW;
+            if (h > roomH) h = roomH;
+        } else if (horizontal) {
+            if (w > roomW) w = roomW;
+            h = h0;
+        } else {
+            if (h > roomH) h = roomH;
+            w = w0;
+        }
     } else {
         // Aspect-locked. The axis the mouse moved furthest (relative to the
         // starting size) drives the scale; the other dimension follows it.
@@ -408,8 +430,8 @@ void Mirror::ApplyDrag(POINT screenPt) {
             c.right = c0.right;
             c.left = c0.right - w;
         }
-        // The other axis has no handle under the mouse, so it grows around the
-        // crop's own centre: the picture stays where it was and widens both ways.
+        // An edge moves one side only: at 1:1 the height is untouched, and the
+        // expression stays general for any case where it is not.
         const int grow = h - h0;
         c.top = c0.top - grow / 2;
         c.bottom = c.top + h;
